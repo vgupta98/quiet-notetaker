@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Record a meeting, transcribe it, and write the notes.
+#
+#   qn                 record a meeting called "meeting"
+#   qn sdk sync        record a meeting called "sdk sync"
+#   qn redo <dir>      rebuild the notes from a recording you already made
+#
+# Stop a recording with Ctrl-C. Everything after that is automatic.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NOTES_DIR="${QN_NOTES_DIR:-$HOME/Meetings}"
+MODEL="${QN_MODEL:-$HERE/models/ggml-small.en.bin}"
+VAD_MODEL="${QN_VAD_MODEL:-$HERE/models/ggml-silero-v5.1.2.bin}"
+RECORDER="$HERE/build/recorder"
+PROMPT="$HERE/prompt.md"
+
+die()  { printf 'qn: %s\n' "$1" >&2; exit 1; }
+step() { printf '\033[2m  %s\033[0m\n' "$1" >&2; }
+
+command -v ffmpeg      >/dev/null || die "ffmpeg is missing — run: brew install ffmpeg"
+command -v whisper-cli >/dev/null || die "whisper-cli is missing — run: brew install whisper-cpp"
+command -v claude      >/dev/null || die "the claude CLI is missing"
+[ -f "$MODEL" ]                   || die "speech model is missing — run: make models"
+
+# Speech to text for one track. Skips a track that was never recorded.
+# whisper logs its GPU setup to stderr, so hold that back unless it fails.
+transcribe() {
+  local work="$1" track="$2"
+  local src="$work/$track.m4a" base="$work/$track" log="$work/$track.log"
+  [ -s "$src" ] || return 0
+  ffmpeg -nostdin -v error -y -i "$src" -ac 1 -ar 16000 -c:a pcm_s16le "$base.wav"
+  local vad=()
+  [ -f "$VAD_MODEL" ] && vad=(--vad -vm "$VAD_MODEL")
+  if ! whisper-cli -m "$MODEL" -f "$base.wav" -oj -of "$base" -np -l en "${vad[@]}" \
+       >/dev/null 2>"$log"; then
+    cat "$log" >&2
+    die "whisper failed on the $track track"
+  fi
+  rm -f "$base.wav" "$log"
+}
+
+# Everything that happens after the recording stops.
+process() {
+  local work="$1" title="$2" note="$3" when="$4"
+
+  step "transcribing"
+  transcribe "$work" them
+  transcribe "$work" me
+
+  python3 "$HERE/merge.py" "$work" > "$work/transcript.txt"
+  [ -s "$work/transcript.txt" ] || die "nothing was transcribed — recording kept in $work"
+
+  step "writing notes"
+  if ! { cat "$PROMPT"; printf '\n\n----- TRANSCRIPT -----\n\n'; cat "$work/transcript.txt"; } \
+       | claude -p > "$work/summary.md"; then
+    die "claude failed — transcript kept at $work/transcript.txt"
+  fi
+
+  {
+    printf '# %s\n\n_%s_\n\n' "$title" "$when"
+    cat "$work/summary.md"
+    printf '\n\n---\n\n## Transcript\n\n```\n'
+    cat "$work/transcript.txt"
+    printf '```\n'
+  } > "$note"
+
+  printf '\n  \033[1m%s\033[0m\n\n' "$note" >&2
+}
+
+# Folder names look like 2026-08-20-1430-sdk-sync.
+when_of() { date -j -f '%Y-%m-%d-%H%M' "$(printf '%s' "$1" | cut -d- -f1-4)" '+%d %b %Y, %H:%M'; }
+
+if [ "${1:-}" = "redo" ]; then
+  work="${2:-}"
+  [ -d "$work" ] || die "usage: qn redo <recording-dir>"
+  work="$(cd "$work" && pwd)"
+  name="$(basename "$work")"
+  title="$(printf '%s' "$name" | cut -d- -f5- | tr '-' ' ')"
+  process "$work" "$title" "$NOTES_DIR/$name.md" "$(when_of "$name")"
+  exit 0
+fi
+
+[ -x "$RECORDER" ] || die "recorder is not built — run: make build"
+
+title="${*:-meeting}"
+slug=$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//; s/-$//')
+[ -n "$slug" ] || slug="meeting"
+name="$(date '+%Y-%m-%d-%H%M')-$slug"
+work="$NOTES_DIR/.recordings/$name"
+mkdir -p "$work"
+
+printf '\n  \033[1m%s\033[0m\n' "$title" >&2
+"$RECORDER" "$work"
+process "$work" "$title" "$NOTES_DIR/$name.md" "$(when_of "$name")"

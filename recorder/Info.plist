@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>dev.local.quiet-notetaker.recorder</string>
+  <key>CFBundleName</key>
+  <string>Quiet Notetaker</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Quiet Notetaker records your microphone so your own words appear in the meeting notes.</string>
+</dict>
+</plist>
