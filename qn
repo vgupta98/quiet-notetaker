@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Record a meeting, transcribe it, and write the notes.
 #
-#   qn                 record a meeting called "meeting"
-#   qn sdk sync        record a meeting called "sdk sync"
-#   qn redo <dir>      rebuild the notes from a recording you already made
+#   qn                              record a meeting called "meeting"
+#   qn sdk sync                     record a meeting called "sdk sync"
+#   qn --with "Priya, Arjun" sync   name who is in the meeting
+#   qn redo <dir>                   rebuild the notes from an earlier recording
 #
 # Stop a recording with Ctrl-C. Everything after that is automatic.
 set -euo pipefail
@@ -23,17 +24,36 @@ command -v whisper-cli >/dev/null || die "whisper-cli is missing — run: brew i
 command -v claude      >/dev/null || die "the claude CLI is missing"
 [ -f "$MODEL" ]                   || die "speech model is missing — run: make models"
 
+# Who is in the meeting. Must come first: qn --with "Priya, Arjun" sdk sync
+attendees=""
+if [ "${1:-}" = "--with" ]; then
+  attendees="${2:-}"
+  shift 2
+fi
+
 # Speech to text for one track. Skips a track that was never recorded.
 # whisper logs its GPU setup to stderr, so hold that back unless it fails.
 transcribe() {
   local work="$1" track="$2"
   local src="$work/$track.m4a" base="$work/$track" log="$work/$track.log"
   [ -s "$src" ] || return 0
-  ffmpeg -nostdin -v error -y -i "$src" -ac 1 -ar 16000 -c:a pcm_s16le "$base.wav"
+
+  # The microphone track has an uneven level — you lean back, you turn away,
+  # you mutter. Levelling it makes whisper markedly more accurate. The system
+  # track is already level and the same filter makes it worse, so leave it be.
+  local level=()
+  if [ "$track" = "me" ]; then
+    level=(-af "highpass=f=80,dynaudnorm=f=150:g=15")
+  fi
+  ffmpeg -nostdin -v error -y -i "$src" ${level[@]+"${level[@]}"} \
+    -ac 1 -ar 16000 -c:a pcm_s16le "$base.wav"
+
   local vad=()
-  [ -f "$VAD_MODEL" ] && vad=(--vad -vm "$VAD_MODEL")
-  if ! whisper-cli -m "$MODEL" -f "$base.wav" -oj -of "$base" -np -l en "${vad[@]}" \
-       >/dev/null 2>"$log"; then
+  if [ -f "$VAD_MODEL" ]; then
+    vad=(--vad -vm "$VAD_MODEL")
+  fi
+  if ! whisper-cli -m "$MODEL" -f "$base.wav" -oj -of "$base" -np -l en \
+       ${vad[@]+"${vad[@]}"} >/dev/null 2>"$log"; then
     cat "$log" >&2
     die "whisper failed on the $track track"
   fi
@@ -51,14 +71,25 @@ process() {
   python3 "$HERE/merge.py" "$work" > "$work/transcript.txt"
   [ -s "$work/transcript.txt" ] || die "nothing was transcribed — recording kept in $work"
 
+  local people=""
+  if [ -s "$work/attendees.txt" ]; then
+    people="$(cat "$work/attendees.txt")"
+  fi
+
   step "writing notes"
-  if ! { cat "$PROMPT"; printf '\n\n----- TRANSCRIPT -----\n\n'; cat "$work/transcript.txt"; } \
-       | claude -p > "$work/summary.md"; then
+  if ! {
+        cat "$PROMPT"
+        if [ -n "$people" ]; then printf '\n\n----- PEOPLE IN THIS MEETING -----\n\n%s\n' "$people"; fi
+        printf '\n\n----- TRANSCRIPT -----\n\n'
+        cat "$work/transcript.txt"
+       } | claude -p > "$work/summary.md"; then
     die "claude failed — transcript kept at $work/transcript.txt"
   fi
 
   {
-    printf '# %s\n\n_%s_\n\n' "$title" "$when"
+    printf '# %s\n\n_%s_\n' "$title" "$when"
+    if [ -n "$people" ]; then printf '\n_With: %s_\n' "$people"; fi
+    printf '\n'
     cat "$work/summary.md"
     printf '\n\n---\n\n## Transcript\n\n```\n'
     cat "$work/transcript.txt"
@@ -73,10 +104,11 @@ when_of() { date -j -f '%Y-%m-%d-%H%M' "$(printf '%s' "$1" | cut -d- -f1-4)" '+%
 
 if [ "${1:-}" = "redo" ]; then
   work="${2:-}"
-  [ -d "$work" ] || die "usage: qn redo <recording-dir>"
+  [ -d "$work" ] || die "usage: qn [--with \"names\"] redo <recording-dir>"
   work="$(cd "$work" && pwd)"
   name="$(basename "$work")"
   title="$(printf '%s' "$name" | cut -d- -f5- | tr '-' ' ')"
+  if [ -n "$attendees" ]; then printf '%s\n' "$attendees" > "$work/attendees.txt"; fi
   process "$work" "$title" "$NOTES_DIR/$name.md" "$(when_of "$name")"
   exit 0
 fi
@@ -89,6 +121,7 @@ slug=$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' |
 name="$(date '+%Y-%m-%d-%H%M')-$slug"
 work="$NOTES_DIR/.recordings/$name"
 mkdir -p "$work"
+if [ -n "$attendees" ]; then printf '%s\n' "$attendees" > "$work/attendees.txt"; fi
 
 printf '\n  \033[1m%s\033[0m\n' "$title" >&2
 "$RECORDER" "$work"
