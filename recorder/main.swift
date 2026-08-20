@@ -220,7 +220,14 @@ Task {
     do {
         try await record(into: outputDirectory)
     } catch {
-        note("failed: \(error.localizedDescription)")
+        let reason = error.localizedDescription
+        if reason.contains("TCC") || reason.lowercased().contains("declin") {
+            note("macOS has not granted Screen Recording permission.")
+            note("Open System Settings > Privacy & Security > Screen Recording,")
+            note("switch it on for the app you run qn from, then quit and reopen that app.")
+        } else {
+            note("failed: \(reason)")
+        }
         exitCode = 1
     }
     finished.signal()
