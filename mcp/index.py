@@ -16,6 +16,7 @@ Standard library only. Python 3.13.
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import os
 import re
@@ -33,7 +34,7 @@ SHARING_FULL = "full"
 # Bumped whenever the tables change, so an old file is rebuilt instead of read.
 # Version 2 also forces a rescan of every note, because version 1 was written
 # by a parser that indexed a note whose sharing value it could not read.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SNIPPET_TOKENS = 14
 MAX_TRANSCRIPT_LINES = 2000
@@ -361,7 +362,7 @@ def _ensure_schema(connection: sqlite3.Connection, *, rebuild: bool) -> None:
             date            TEXT NOT NULL,
             attendees       TEXT NOT NULL,
             sharing         TEXT NOT NULL,
-            mtime           REAL NOT NULL,
+            fingerprint     TEXT NOT NULL,
             notes_text      TEXT NOT NULL,
             transcript_text TEXT NOT NULL
         );
@@ -390,15 +391,15 @@ def _delete_note(connection: sqlite3.Connection, meeting_id: str) -> None:
     connection.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
 
 
-def _write_note(connection: sqlite3.Connection, note: dict[str, Any], mtime: float) -> None:
+def _write_note(connection: sqlite3.Connection, note: dict[str, Any], fingerprint: str) -> None:
     _delete_note(connection, note["id"])
     connection.execute(
-        "INSERT INTO meetings (id, title, date, attendees, sharing, mtime,"
+        "INSERT INTO meetings (id, title, date, attendees, sharing, fingerprint,"
         " notes_text, transcript_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             note["id"], note["title"], note["date"],
             json.dumps(note["attendees"], ensure_ascii=False),
-            note["sharing"], mtime, note["notes_text"], note["transcript_text"],
+            note["sharing"], fingerprint, note["notes_text"], note["transcript_text"],
         ),
     )
     connection.execute(
@@ -414,13 +415,27 @@ def _write_note(connection: sqlite3.Connection, note: dict[str, Any], mtime: flo
     )
 
 
+def _fingerprint(path: str) -> str | None:
+    """A hash of the file's bytes. None when it cannot be read."""
+    try:
+        with open(path, "rb") as handle:
+            return hashlib.sha256(handle.read()).hexdigest()
+    except OSError:
+        return None
+
+
 def refresh(db_path: str, notes_dir: str, *, rebuild: bool = False) -> dict[str, int]:
     """Bring the index in line with the notes on disk.
 
-    Incremental: a note is re-read only when its mtime moved. Notes that
-    vanished, and notes that stopped saying `sharing: full`, are dropped. A full
-    rebuild produces the same rows, so a suspect index needs no reasoning about
-    — pass rebuild=True.
+    Incremental, but keyed on a hash of the file rather than its timestamp.
+    A timestamp can stay still while the contents change — `touch -r`, a
+    restored backup, a sync tool — and that would keep a note in the index
+    after it was edited to say `sharing: local`. Hashing costs a read of some
+    small markdown files and removes the whole class of problem.
+
+    Notes that vanished, and notes that stopped saying `sharing: full`, are
+    dropped. A full rebuild produces the same rows, so a suspect index needs
+    no reasoning about — pass rebuild=True.
     """
     directory = os.path.abspath(os.path.expanduser(notes_dir))
     os.makedirs(directory, exist_ok=True)
@@ -428,14 +443,18 @@ def refresh(db_path: str, notes_dir: str, *, rebuild: bool = False) -> dict[str,
     connection = _connect(db_path)
     try:
         _ensure_schema(connection, rebuild=rebuild)
-        known = {row["id"]: row["mtime"] for row in connection.execute("SELECT id, mtime FROM meetings")}
+        known = {
+            row["id"]: row["fingerprint"]
+            for row in connection.execute("SELECT id, fingerprint FROM meetings")
+        }
 
         seen: set[str] = set()
         indexed = 0
         for path in sorted(glob.glob(os.path.join(directory, "*.md"))):
             meeting_id = os.path.splitext(os.path.basename(path))[0]
-            mtime = os.stat(path).st_mtime
-            if known.get(meeting_id) == mtime:
+            fingerprint = _fingerprint(path)
+            if fingerprint is not None and known.get(meeting_id) == fingerprint:
+                # Identical bytes, so the sharing decision is identical too.
                 seen.add(meeting_id)
                 continue
             # An excluded note is read on every refresh, because only its
@@ -443,7 +462,7 @@ def refresh(db_path: str, notes_dir: str, *, rebuild: bool = False) -> dict[str,
             note = parse_note(path)
             if note is None:
                 continue
-            _write_note(connection, note, mtime)
+            _write_note(connection, note, fingerprint or "")
             seen.add(meeting_id)
             indexed += 1
 

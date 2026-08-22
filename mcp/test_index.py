@@ -714,3 +714,61 @@ class NotesDirTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContentHashNotTimestamp(unittest.TestCase):
+    """A stale timestamp must not keep a private note in the index.
+
+    refresh() used to skip any note whose mtime had not moved. A timestamp can
+    stay still while the contents change — `touch -r`, a restored backup, a
+    sync tool that preserves times — which would leave a note indexed after it
+    was edited to say `sharing: local`.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        self.db = os.path.join(self.dir, ".index.db")
+        self.path = os.path.join(self.dir, "2026-08-20-1000-sync.md")
+        self.addCleanup(self.tmp.cleanup)
+
+    def write(self, sharing):
+        with open(self.path, "w", encoding="utf-8") as handle:
+            handle.write(
+                f'---\ntitle: "Sync"\ndate: 2026-08-20 10:00\nattendees: []\n'
+                f"sharing: {sharing}\ncapture: ok\nwarnings: []\n---\n\n"
+                "# Sync\n\n## Summary\n- zebrafish calibration\n\n---\n\n"
+                "## Transcript\n\n```\n[00:00] Me: hello\n```\n"
+            )
+
+    def test_flipping_to_local_with_a_frozen_timestamp_still_removes_it(self):
+        self.write("full")
+        stamp = os.stat(self.path)
+        index.refresh(self.db, self.dir)
+        self.assertEqual(index.search(self.db, "zebrafish")["total"], 1)
+
+        # Edit the note, then put the timestamp back exactly as it was.
+        self.write("local")
+        os.utime(self.path, (stamp.st_atime, stamp.st_mtime))
+        self.assertEqual(os.stat(self.path).st_mtime, stamp.st_mtime)
+
+        index.refresh(self.db, self.dir)
+        self.assertEqual(index.search(self.db, "zebrafish")["total"], 0)
+        with self.assertRaises(LookupError):
+            index.get(self.db, "2026-08-20-1000-sync")
+
+    def test_unchanged_content_is_not_reindexed(self):
+        # The shortcut must still work, or every refresh reparses everything.
+        self.write("full")
+        first = index.refresh(self.db, self.dir)
+        second = index.refresh(self.db, self.dir)
+        self.assertEqual(first["indexed"], 1)
+        self.assertEqual(second["indexed"], 0)
+
+    def test_content_change_with_a_moved_timestamp_is_reindexed(self):
+        self.write("full")
+        index.refresh(self.db, self.dir)
+        self.write("full")
+        with open(self.path, "a", encoding="utf-8") as handle:
+            handle.write("\nquokka provisioning\n")
+        self.assertEqual(index.refresh(self.db, self.dir)["indexed"], 1)
