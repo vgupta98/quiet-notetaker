@@ -1,42 +1,127 @@
 #!/usr/bin/env bash
-# Record a meeting, transcribe it, and write the notes.
+# Record a meeting, transcribe it, and write the notes. Everything stays on
+# this Mac unless you choose to send a transcript to Claude.
 #
-#   qn                              record a meeting called "meeting"
-#   qn sdk sync                     record a meeting called "sdk sync"
-#   qn --with "Priya, Arjun" sync   name who is in the meeting
-#   qn redo <dir>                   rebuild the notes from an earlier recording
-#
-# Stop a recording with Ctrl-C. Everything after that is automatic.
+#   qn [--with "A, B"] [--local] [title...]   record until Ctrl-C, then process
+#   qn watch                                  record detected meetings by itself
+#   qn redo <id>                              rebuild notes from a recording
+#   qn approve <id>                           send a held meeting to Claude
+#   qn pending                                list meetings awaiting approval
+#   qn play <id> [MM:SS]                      hear what was actually said
+#   qn index                                  rebuild the search index
+#   qn doctor                                 check the setup
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NOTES_DIR="${QN_NOTES_DIR:-$HOME/Meetings}"
+REC_DIR="$NOTES_DIR/.recordings"
 MODEL="${QN_MODEL:-$HERE/models/ggml-small.en.bin}"
 VAD_MODEL="${QN_VAD_MODEL:-$HERE/models/ggml-silero-v5.1.2.bin}"
+LANG_CODE="${QN_LANG:-en}"
 RECORDER="$HERE/build/recorder"
+WATCHER="$HERE/build/watcher"
 PROMPT="$HERE/prompt.md"
+PLAY_WINDOW="${QN_PLAY_WINDOW:-60}"
 
 die()  { printf 'qn: %s\n' "$1" >&2; exit 1; }
 step() { printf '\033[2m  %s\033[0m\n' "$1" >&2; }
+warn() { printf '\033[33m  %s\033[0m\n' "$1" >&2; }
+loud() { printf '\n  \033[1m%s\033[0m\n' "$1" >&2; }
 
-command -v ffmpeg      >/dev/null || die "ffmpeg is missing — run: brew install ffmpeg"
-command -v whisper-cli >/dev/null || die "whisper-cli is missing — run: brew install whisper-cpp"
-command -v claude      >/dev/null || die "the claude CLI is missing"
-[ -f "$MODEL" ]                   || die "speech model is missing — run: make models"
+# ---------------------------------------------------------------- utilities
 
-# Who is in the meeting. Must come first: qn --with "Priya, Arjun" sdk sync
-attendees=""
-if [ "${1:-}" = "--with" ]; then
-  attendees="${2:-}"
-  shift 2
-fi
+need() { command -v "$1" >/dev/null || die "$1 is missing — $2"; }
 
-# Speech to text for one track. Skips a track that was never recorded.
+slugify() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//; s/-$//'
+}
+
+# YAML needs quotes escaped; titles come from humans and calendars.
+yaml_string() {
+  printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+}
+
+# Turn "Priya, Arjun" into a YAML inline list.
+yaml_list() {
+  local raw="$1" item out=""
+  if [ -z "$raw" ]; then printf '[]'; return; fi
+  local IFS=','
+  for item in $raw; do
+    item="$(printf '%s' "$item" | sed 's/^ *//; s/ *$//')"
+    if [ -n "$item" ]; then
+      if [ -n "$out" ]; then out="$out, "; fi
+      out="$out$(yaml_string "$item")"
+    fi
+  done
+  printf '[%s]' "$out"
+}
+
+# Accept either a meeting id or a path to its recording folder.
+resolve_recording() {
+  local given="$1"
+  if [ -d "$given" ]; then (cd "$given" && pwd); return; fi
+  if [ -d "$REC_DIR/$given" ]; then printf '%s' "$REC_DIR/$given"; return; fi
+  die "no recording called '$given' — look in $REC_DIR"
+}
+
+title_from_id() { printf '%s' "$1" | cut -d- -f5- | tr '-' ' '; }
+
+when_from_id() {
+  date -j -f '%Y-%m-%d-%H%M' "$(printf '%s' "$1" | cut -d- -f1-4)" '+%d %b %Y, %H:%M' 2>/dev/null \
+    || printf 'unknown time'
+}
+
+# ------------------------------------------------------------------ consent
+
+# Ask once, without blocking the recording. The answer lands in a file, so it
+# can arrive at any point before the transcript would be sent.
+ask_consent() {
+  local work="$1" title="$2"
+  (
+    answer="$(osascript 2>/dev/null <<OSA || true
+display dialog "Recording: $title
+
+Tell the meeting you are taking AI notes.
+
+Full notes  — send the transcript to Claude
+Local only  — keep everything on this Mac
+Do not record — delete the audio" ¬
+  with title "Quiet Notetaker" ¬
+  buttons {"Do not record", "Local only", "Full notes"} ¬
+  default button "Full notes" ¬
+  giving up after 300
+OSA
+)"
+    case "$answer" in
+      *"Full notes"*)    printf 'full\n'  > "$work/consent" ;;
+      *"Local only"*)    printf 'local\n' > "$work/consent" ;;
+      *"Do not record"*) printf 'none\n'  > "$work/consent" ;;
+      *)                 printf 'local\n' > "$work/consent" ;;
+    esac
+  ) >/dev/null 2>&1 &
+}
+
+# Give a still-open dialog a moment to be answered. Silence means "hold it".
+wait_for_consent() {
+  local work="$1" waited=0
+  while [ ! -s "$work/consent" ] && [ "$waited" -lt 90 ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if [ ! -s "$work/consent" ]; then printf 'local\n' > "$work/consent"; fi
+}
+
+read_consent() {
+  if [ -s "$1/consent" ]; then tr -d '[:space:]' < "$1/consent"; else printf 'full'; fi
+}
+
+# --------------------------------------------------------------- transcribe
+
 # whisper logs its GPU setup to stderr, so hold that back unless it fails.
-transcribe() {
+transcribe_track() {
   local work="$1" track="$2"
   local src="$work/$track.m4a" base="$work/$track" log="$work/$track.log"
-  [ -s "$src" ] || return 0
+  if [ ! -s "$src" ]; then return 0; fi
 
   # The microphone track has an uneven level — you lean back, you turn away,
   # you mutter. Levelling it makes whisper markedly more accurate. The system
@@ -52,7 +137,7 @@ transcribe() {
   if [ -f "$VAD_MODEL" ]; then
     vad=(--vad -vm "$VAD_MODEL")
   fi
-  if ! whisper-cli -m "$MODEL" -f "$base.wav" -oj -of "$base" -np -l en \
+  if ! whisper-cli -m "$MODEL" -f "$base.wav" -oj -of "$base" -np -l "$LANG_CODE" \
        ${vad[@]+"${vad[@]}"} >/dev/null 2>"$log"; then
     cat "$log" >&2
     die "whisper failed on the $track track"
@@ -60,69 +145,294 @@ transcribe() {
   rm -f "$base.wav" "$log"
 }
 
-# Everything that happens after the recording stops.
-process() {
-  local work="$1" title="$2" note="$3" when="$4"
+# ------------------------------------------------------------------ writing
 
-  step "transcribing"
-  transcribe "$work" them
-  transcribe "$work" me
-
-  python3 "$HERE/merge.py" "$work" > "$work/transcript.txt"
-  [ -s "$work/transcript.txt" ] || die "nothing was transcribed — recording kept in $work"
-
-  local people=""
-  if [ -s "$work/attendees.txt" ]; then
-    people="$(cat "$work/attendees.txt")"
-  fi
-
-  step "writing notes"
-  if ! {
-        cat "$PROMPT"
-        if [ -n "$people" ]; then printf '\n\n----- PEOPLE IN THIS MEETING -----\n\n%s\n' "$people"; fi
-        printf '\n\n----- TRANSCRIPT -----\n\n'
-        cat "$work/transcript.txt"
-       } | claude -p > "$work/summary.md"; then
-    die "claude failed — transcript kept at $work/transcript.txt"
-  fi
+write_note() {
+  local work="$1" note="$2" title="$3" when="$4" people="$5" sharing="$6"
+  local capture="$7" warnings="$8"
 
   {
-    printf '# %s\n\n_%s_\n' "$title" "$when"
-    if [ -n "$people" ]; then printf '\n_With: %s_\n' "$people"; fi
-    printf '\n'
-    cat "$work/summary.md"
+    printf -- '---\n'
+    printf 'title: %s\n' "$(yaml_string "$title")"
+    printf 'date: %s\n' "$(printf '%s' "$(basename "$work")" | cut -d- -f1-4 \
+             | sed 's/\(....\)-\(..\)-\(..\)-\(..\)\(..\)/\1-\2-\3 \4:\5/')"
+    printf 'attendees: %s\n' "$(yaml_list "$people")"
+    printf 'sharing: %s\n' "$sharing"
+    printf 'capture: %s\n' "$capture"
+    printf 'warnings: %s\n' "$warnings"
+    printf -- '---\n\n'
+
+    printf '# %s\n\n_%s_' "$title" "$when"
+    if [ -n "$people" ]; then printf ' · _With: %s_' "$people"; fi
+    printf '\n\n'
+
+    if [ -s "$work/summary.md" ]; then
+      cat "$work/summary.md"
+    else
+      printf '_Kept on this Mac. Claude has not seen this meeting._\n\n'
+      printf '_Run `qn approve %s` to have the notes written._\n' "$(basename "$work")"
+    fi
+
     printf '\n\n---\n\n## Transcript\n\n```\n'
     cat "$work/transcript.txt"
     printf '```\n'
   } > "$note"
-
-  printf '\n  \033[1m%s\033[0m\n\n' "$note" >&2
 }
 
-# Folder names look like 2026-08-20-1430-sdk-sync.
-when_of() { date -j -f '%Y-%m-%d-%H%M' "$(printf '%s' "$1" | cut -d- -f1-4)" '+%d %b %Y, %H:%M'; }
+# Everything that happens after a recording stops.
+process_recording() {
+  local work="$1" title="$2" people="$3"
+  local id note
+  id="$(basename "$work")"
+  note="$NOTES_DIR/$id.md"
 
-if [ "${1:-}" = "redo" ]; then
-  work="${2:-}"
-  [ -d "$work" ] || die "usage: qn [--with \"names\"] redo <recording-dir>"
-  work="$(cd "$work" && pwd)"
-  name="$(basename "$work")"
-  title="$(printf '%s' "$name" | cut -d- -f5- | tr '-' ' ')"
-  if [ -n "$attendees" ]; then printf '%s\n' "$attendees" > "$work/attendees.txt"; fi
-  process "$work" "$title" "$NOTES_DIR/$name.md" "$(when_of "$name")"
-  exit 0
-fi
+  local report capture warnings
+  report="$(python3 "$HERE/health.py" "$work")"
+  capture="$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["capture"])')"
+  warnings="$(printf '%s' "$report" | python3 -c '
+import json, sys
+found = json.load(sys.stdin)["warnings"]
+print("[" + ", ".join(json.dumps(w) for w in found) + "]")')"
 
-[ -x "$RECORDER" ] || die "recorder is not built — run: make build"
+  if [ "$capture" = "warn" ]; then
+    printf '%s' "$report" | python3 -c '
+import json, sys
+for w in json.load(sys.stdin)["warnings"]:
+    print("  \033[33mwarning: " + w + "\033[0m")' >&2
+  fi
 
-title="${*:-meeting}"
-slug=$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//; s/-$//')
-[ -n "$slug" ] || slug="meeting"
-name="$(date '+%Y-%m-%d-%H%M')-$slug"
-work="$NOTES_DIR/.recordings/$name"
-mkdir -p "$work"
-if [ -n "$attendees" ]; then printf '%s\n' "$attendees" > "$work/attendees.txt"; fi
+  step "transcribing"
+  transcribe_track "$work" them
+  transcribe_track "$work" me
+  python3 "$HERE/merge.py" "$work" > "$work/transcript.txt"
+  if [ ! -s "$work/transcript.txt" ]; then
+    die "nothing was transcribed — the recording is still in $work"
+  fi
 
-printf '\n  \033[1m%s\033[0m\n' "$title" >&2
-"$RECORDER" "$work"
-process "$work" "$title" "$NOTES_DIR/$name.md" "$(when_of "$name")"
+  if [ -z "$people" ] && [ -s "$work/attendees.txt" ]; then
+    people="$(cat "$work/attendees.txt")"
+  fi
+
+  local sharing
+  sharing="$(read_consent "$work")"
+
+  if [ "$sharing" = "full" ]; then
+    step "writing notes"
+    if ! {
+          cat "$PROMPT"
+          if [ -n "$people" ]; then
+            printf '\n\n----- PEOPLE IN THIS MEETING -----\n\n%s\n' "$people"
+          fi
+          printf '\n\n----- TRANSCRIPT -----\n\n'
+          cat "$work/transcript.txt"
+         } | claude -p > "$work/summary.md"; then
+      die "claude failed — the transcript is safe at $work/transcript.txt"
+    fi
+  else
+    rm -f "$work/summary.md"
+    warn "held on this Mac — run 'qn approve $id' to have the notes written"
+  fi
+
+  write_note "$work" "$note" "$title" "$(when_from_id "$id")" "$people" "$sharing" \
+             "$capture" "$warnings"
+  refresh_index_quietly
+  loud "$note"
+}
+
+refresh_index_quietly() {
+  if [ -f "$HERE/mcp/index.py" ]; then
+    python3 "$HERE/mcp/index.py" "$NOTES_DIR" >/dev/null 2>&1 || true
+  fi
+}
+
+# ----------------------------------------------------------------- commands
+
+cmd_record() {
+  local people="$1" sharing="$2" title="$3"
+  [ -x "$RECORDER" ] || die "the recorder is not built — run: make build"
+
+  local slug id work
+  slug="$(slugify "$title")"
+  if [ -z "$slug" ]; then slug="meeting"; fi
+  id="$(date '+%Y-%m-%d-%H%M')-$slug"
+  work="$REC_DIR/$id"
+  mkdir -p "$work"
+  if [ -n "$people" ]; then printf '%s\n' "$people" > "$work/attendees.txt"; fi
+  printf '%s\n' "$sharing" > "$work/consent"
+
+  loud "$title"
+  "$RECORDER" "$work"
+  process_recording "$work" "$title" "$people"
+}
+
+cmd_watch() {
+  [ -x "$WATCHER" ] || die "the watcher is not built — run: make build"
+  [ -x "$RECORDER" ] || die "the recorder is not built — run: make build"
+  mkdir -p "$REC_DIR"
+
+  local lock="$REC_DIR/.recording"
+  rm -f "$lock"
+  step "watching for meetings — ctrl-c to stop"
+
+  "$WATCHER" --ignore-while "$lock" | while IFS= read -r line; do
+    local verb rest title people work id
+    verb="${line%%	*}"
+    rest="${line#*	}"
+    case "$verb" in
+      START)
+        title="$(printf '%s' "$rest" | tr '\t' '\n' | sed -n 's/^title=//p' | head -1)"
+        people="$(printf '%s' "$rest" | tr '\t' '\n' | sed -n 's/^attendees=//p' | head -1)"
+        if [ -z "$title" ]; then
+          title="$(printf '%s' "$rest" | tr '\t' '\n' | sed -n 's/^window=//p' | head -1)"
+        fi
+        if [ -z "$title" ]; then title="meeting"; fi
+
+        id="$(date '+%Y-%m-%d-%H%M')-$(slugify "$title")"
+        work="$REC_DIR/$id"
+        mkdir -p "$work"
+        if [ -n "$people" ]; then printf '%s\n' "$people" > "$work/attendees.txt"; fi
+        printf '%s' "$work" > "$lock"
+
+        loud "$title"
+        ask_consent "$work" "$title"
+        "$RECORDER" "$work" &
+        printf '%s' "$!" > "$lock.pid"
+        ;;
+      STOP)
+        if [ -s "$lock.pid" ]; then
+          kill -INT "$(cat "$lock.pid")" 2>/dev/null || true
+          wait "$(cat "$lock.pid")" 2>/dev/null || true
+        fi
+        if [ -s "$lock" ]; then
+          work="$(cat "$lock")"
+          rm -f "$lock" "$lock.pid"
+          wait_for_consent "$work"
+          if [ "$(read_consent "$work")" = "none" ]; then
+            rm -rf "$work"
+            warn "discarded at your request"
+          else
+            people=""
+            if [ -s "$work/attendees.txt" ]; then people="$(cat "$work/attendees.txt")"; fi
+            process_recording "$work" "$(title_from_id "$(basename "$work")")" "$people"
+          fi
+        fi
+        ;;
+    esac
+  done
+}
+
+cmd_redo() {
+  local work people="" id
+  work="$(resolve_recording "$1")"
+  id="$(basename "$work")"
+  if [ -n "${2:-}" ]; then printf '%s\n' "$2" > "$work/attendees.txt"; fi
+  if [ -s "$work/attendees.txt" ]; then people="$(cat "$work/attendees.txt")"; fi
+  process_recording "$work" "$(title_from_id "$id")" "$people"
+}
+
+cmd_approve() {
+  local work
+  work="$(resolve_recording "$1")"
+  printf 'full\n' > "$work/consent"
+  step "sending to claude"
+  cmd_redo "$work"
+}
+
+cmd_pending() {
+  local found=0 dir
+  for dir in "$REC_DIR"/*/; do
+    if [ -d "$dir" ] && [ "$(read_consent "${dir%/}")" != "full" ]; then
+      printf '  %s\n' "$(basename "${dir%/}")"
+      found=1
+    fi
+  done
+  if [ "$found" -eq 0 ]; then step "nothing waiting"; fi
+}
+
+cmd_play() {
+  local work seek="${2:-00:00}"
+  work="$(resolve_recording "$1")"
+
+  local sources=()
+  local track
+  for track in them me; do
+    if [ -s "$work/$track.m4a" ]; then sources+=(-ss "$seek" -i "$work/$track.m4a"); fi
+  done
+  if [ "${#sources[@]}" -eq 0 ]; then die "no audio in $work"; fi
+
+  local mix=()
+  if [ "${#sources[@]}" -gt 2 ]; then mix=(-filter_complex "amix=inputs=2:normalize=0"); fi
+
+  local clip
+  clip="$(mktemp -t qnplay).wav"
+  if [ -n "${QN_DRY_RUN:-}" ]; then
+    printf 'ffmpeg %s %s -t %s %s\n' "${sources[*]}" "${mix[*]}" "$PLAY_WINDOW" "$clip"
+    printf 'afplay %s\n' "$clip"
+    rm -f "$clip"
+    return 0
+  fi
+
+  ffmpeg -nostdin -v error -y ${sources[@]+"${sources[@]}"} ${mix[@]+"${mix[@]}"} \
+    -t "$PLAY_WINDOW" "$clip"
+  step "playing $seek onwards — ctrl-c to stop"
+  afplay "$clip" || true
+  rm -f "$clip"
+}
+
+cmd_index() {
+  [ -f "$HERE/mcp/index.py" ] || die "the index is not built yet"
+  python3 "$HERE/mcp/index.py" "$NOTES_DIR"
+  step "indexed $NOTES_DIR"
+}
+
+cmd_doctor() {
+  local ok=0
+  check() {
+    if eval "$2" >/dev/null 2>&1; then
+      printf '  \033[32m✓\033[0m %s\n' "$1"
+    else
+      printf '  \033[31m✗\033[0m %s — %s\n' "$1" "$3"
+      ok=1
+    fi
+  }
+  check "ffmpeg"          "command -v ffmpeg"      "brew install ffmpeg"
+  check "whisper-cli"     "command -v whisper-cli" "brew install whisper-cpp"
+  check "claude"          "command -v claude"      "install the Claude CLI"
+  check "speech model"    "[ -f '$MODEL' ]"        "make models"
+  check "voice detector"  "[ -f '$VAD_MODEL' ]"    "make models"
+  check "recorder built"  "[ -x '$RECORDER' ]"     "make build"
+  check "watcher built"   "[ -x '$WATCHER' ]"      "make build"
+  check "notes folder"    "[ -d '$NOTES_DIR' ]"    "it appears after your first meeting"
+  printf '\n  notes: %s\n\n' "$NOTES_DIR"
+  return $ok
+}
+
+# ----------------------------------------------------------------- dispatch
+
+need ffmpeg "brew install ffmpeg"
+
+attendees=""
+sharing="full"
+while [ $# -gt 0 ]; do
+  case "${1:-}" in
+    --with)  attendees="${2:-}"; shift 2 ;;
+    --local) sharing="local"; shift ;;
+    *)       break ;;
+  esac
+done
+
+case "${1:-}" in
+  watch)   cmd_watch ;;
+  redo)    shift; [ $# -ge 1 ] || die "usage: qn redo <id>"; cmd_redo "$1" "$attendees" ;;
+  approve) shift; [ $# -ge 1 ] || die "usage: qn approve <id>"; cmd_approve "$1" ;;
+  pending) cmd_pending ;;
+  play)    shift; [ $# -ge 1 ] || die "usage: qn play <id> [MM:SS]"; cmd_play "$1" "${2:-00:00}" ;;
+  index)   cmd_index ;;
+  doctor)  cmd_doctor ;;
+  *)
+    need whisper-cli "brew install whisper-cpp"
+    need claude "install the Claude CLI"
+    [ -f "$MODEL" ] || die "the speech model is missing — run: make models"
+    cmd_record "$attendees" "$sharing" "${*:-meeting}"
+    ;;
+esac

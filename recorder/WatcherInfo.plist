@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>dev.local.quiet-notetaker.watcher</string>
+  <key>CFBundleName</key>
+  <string>Quiet Notetaker Watcher</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>Quiet Notetaker reads your calendar to name a meeting and list who is in it.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Quiet Notetaker checks whether the microphone is in use, so it knows a call has started.</string>
+</dict>
+</plist>
