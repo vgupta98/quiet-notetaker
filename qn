@@ -9,6 +9,7 @@
 #   qn pending                                list meetings awaiting approval
 #   qn play <id> [MM:SS]                      hear what was actually said
 #   qn index                                  rebuild the search index
+#   qn vocab                                  show the words it has learned
 #   qn doctor                                 check the setup
 set -euo pipefail
 
@@ -143,8 +144,18 @@ transcribe_track() {
   if [ -f "$VAD_MODEL" ]; then
     vad=(--vad -vm "$VAD_MODEL")
   fi
+
+  # Words this Mac has learned your meetings use. --carry-initial-prompt keeps
+  # them in play past the first window, which is where long meetings drift.
+  local prime=()
+  local words
+  words="$(python3 "$HERE/vocab.py" "$NOTES_DIR" --prompt 2>/dev/null || true)"
+  if [ -n "$words" ]; then
+    prime=(--prompt "$words" --carry-initial-prompt)
+  fi
+
   if ! whisper-cli -m "$MODEL" -f "$base.wav" -oj -of "$base" -np -l "$LANG_CODE" \
-       ${vad[@]+"${vad[@]}"} >/dev/null 2>"$log"; then
+       ${vad[@]+"${vad[@]}"} ${prime[@]+"${prime[@]}"} >/dev/null 2>"$log"; then
     cat "$log" >&2
     die "whisper failed on the $track track"
   fi
@@ -249,6 +260,8 @@ refresh_index_quietly() {
   if [ -f "$HERE/mcp/index.py" ]; then
     python3 "$HERE/mcp/index.py" "$NOTES_DIR" >/dev/null 2>&1 || true
   fi
+  # Learning happens after the notes exist, never from the raw transcript.
+  python3 "$HERE/vocab.py" "$NOTES_DIR" >/dev/null 2>&1 || true
 }
 
 # ----------------------------------------------------------------- commands
@@ -391,6 +404,13 @@ cmd_play() {
   rm -f "$clip"
 }
 
+cmd_vocab() {
+  python3 "$HERE/vocab.py" "$NOTES_DIR"
+  printf '\n'
+  sed 's/^/  /' "$NOTES_DIR/vocabulary.txt" 2>/dev/null || true
+  printf '\n  edit that file to correct it — deleted lines never come back\n\n'
+}
+
 cmd_index() {
   [ -f "$HERE/mcp/index.py" ] || die "the index is not built yet"
   python3 "$HERE/mcp/index.py" "$NOTES_DIR"
@@ -440,6 +460,7 @@ case "${1:-}" in
   pending) cmd_pending ;;
   play)    shift; [ $# -ge 1 ] || die "usage: qn play <id> [MM:SS]"; cmd_play "$1" "${2:-00:00}" ;;
   index)   cmd_index ;;
+  vocab)   cmd_vocab ;;
   doctor)  cmd_doctor ;;
   *)
     need whisper-cli "brew install whisper-cpp"

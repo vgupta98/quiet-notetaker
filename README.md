@@ -93,6 +93,34 @@ them.
 
 Meetings marked **local only** are never indexed and never appear in a result.
 
+## What it learns
+
+Whisper guesses at words nobody told it about. "On-call" came out as "uncle" in
+every note until Claude fixed it afterwards. So the tool builds a vocabulary
+from your own meetings and primes the decoder with it.
+
+```sh
+./qn vocab      # show what it has learned
+```
+
+The list lives in `~/Meetings/vocabulary.txt`. Open it, edit it, add your own
+words. **Delete a line and it never comes back.**
+
+It cannot poison itself. A vocabulary that learned from whisper's own output
+would reinforce its own mistakes until they were all you saw, so that path does
+not exist. Only two things get in:
+
+| Source | Rule |
+|---|---|
+| Attendee names | Typed by you or read from your calendar. Never produced by the decoder, so trusted on sight |
+| Words Claude corrected | Present in the notes, absent from that meeting's transcript. Needs two different meetings before it counts |
+
+**Any spelling whisper produced anywhere is disqualified everywhere.** "Uncle"
+is in the transcript, so it can never be learned. "On-call" only exists because
+Claude put it there, so it can.
+
+Private meetings contribute nothing.
+
 ## How it works
 
 Your Mac records two tracks: everything the meeting app plays (`them.m4a`) and
@@ -125,6 +153,7 @@ mishearings in the notes above it, so a wrong correction is always checkable.
 | `qn` | The command you actually use |
 | `health.py` | Decides whether a recording is usable |
 | `merge.py` | Interleaves the two transcripts by timestamp |
+| `vocab.py` | Learns your meetings' words and primes whisper with them |
 | `prompt.md` | The note template. Edit this to change the notes |
 | `mcp/` | The search index and the MCP server |
 
