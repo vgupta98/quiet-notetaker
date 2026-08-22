@@ -105,9 +105,9 @@ assert_eq "local" "$(cat "$QN_NOTES_DIR/.recordings/$LOCAL_ID/consent")" "consen
 
 full_text="$(cat "$full_note")"
 assert_eq "---" "$(head -1 "$full_note")" "note opens with frontmatter"
-assert_contains "$full_text" "title: Roadmap Review" "frontmatter has title"
+assert_contains "$full_text" "title: \"Roadmap Review\"" "frontmatter has a quoted title"
 assert_contains "$full_text" "date: 2026-03-04 09:30" "frontmatter date is YYYY-MM-DD HH:MM"
-assert_contains "$full_text" "attendees: [Priya, Arjun]" "frontmatter has attendees"
+assert_contains "$full_text" "attendees: [\"Priya\", \"Arjun\"]" "frontmatter has a quoted attendee list"
 assert_contains "$full_text" "sharing: full" "frontmatter has sharing"
 assert_contains "$full_text" "capture: ok" "frontmatter has capture"
 assert_contains "$full_text" "warnings: []" "frontmatter has warnings"
@@ -229,6 +229,17 @@ else
   skip "python unittest (health, merge)" "no root test_*.py"
 fi
 
+# --------------------------------------------------------------------------
+if ls "$HERE"/test_*.py >/dev/null 2>&1; then
+  if (cd "$ROOT" && python3 -m unittest discover -s "$HERE" -p 'test_*.py' -t "$HERE"); then
+    pass "python unittest (test/)"
+  else
+    fail "python unittest (test/)" "see the output above"
+  fi
+else
+  fail "python unittest (test/)" "test/ has no test_*.py"
+fi
+
 section "watcher"
 # --------------------------------------------------------------------------
 if [ -x "$ROOT/build/watcher" ]; then
@@ -244,13 +255,31 @@ guard_notes_dir
 
 # A subcommand is only probed by reading the source. Running an unknown
 # subcommand would fall through to the record path and start a real recording.
-qn_has() { grep -Eq "(=|\|)[[:space:]]*\"$1\"|^[[:space:]]*\"?$1\"?\)" "$QN"; }
+# The dispatch may match on the verb alone (`redo)`) or on the verb and the
+# argument count (`redo:2)`). Both count as present.
+qn_has() {
+  grep -Eq "^[[:space:]]*\"?$1\"?(:[0-9]+)?\)" "$QN" && return 0
+  grep -Eq "(=|\|)[[:space:]]*\"$1\"" "$QN"
+}
+
+# SPEC.md, "CLI surface". Every one of these must exist. A rename is a broken
+# contract, so it fails here instead of quietly skipping the tests below.
+for sub in redo play index pending approve vocab doctor; do
+  if qn_has "$sub"; then
+    pass "qn has the $sub subcommand"
+  else
+    fail "qn has the $sub subcommand" "SPEC.md requires it; qn does not dispatch it"
+  fi
+done
 
 # Stub the external tools so nothing calls whisper, ffmpeg or the real Claude.
 STUB="$TMPROOT/stubbin"
 mkdir -p "$STUB"
+# QN_CLAUDE_LOG makes a call to claude visible. A test that expects no call
+# checks the file is absent, so silence is proof and not an assumption.
 cat > "$STUB/claude" <<'STUBEOF'
 #!/bin/bash
+if [ -n "${QN_CLAUDE_LOG:-}" ]; then printf 'claude called\n' >> "$QN_CLAUDE_LOG"; fi
 cat >/dev/null
 cat <<'BODY'
 ## Summary
@@ -298,7 +327,7 @@ else
 fi
 assert_contains "$(cat "$TMPROOT/nodeps.out")" "ffmpeg" "the failure names the missing tool"
 
-# 2. qn redo on a fixture recording writes a note.
+# 2. qn redo on a fixture recording writes a note with the SPEC shape.
 if qn_has redo; then
   redo_dir="$QN_NOTES_DIR/.recordings/$FULL_ID"
   rm -f "$QN_NOTES_DIR/$FULL_ID.md"
@@ -307,8 +336,22 @@ if qn_has redo; then
     /bin/bash "$QN" redo "$redo_dir"
   assert_eq "0" "$CAPTURE_CODE" "qn redo exits 0"
   assert_file "$QN_NOTES_DIR/$FULL_ID.md" "qn redo writes the note"
+
+  redo_text="$(cat "$QN_NOTES_DIR/$FULL_ID.md")"
+  assert_eq "---" "$(head -1 "$QN_NOTES_DIR/$FULL_ID.md")" "qn redo opens the note with frontmatter"
+  assert_contains "$redo_text" "title: \"roadmap review\"" "qn redo writes a quoted title"
+  assert_contains "$redo_text" "date: 2026-03-04 09:30" "qn redo writes the date from the id"
+  assert_contains "$redo_text" "attendees: [\"Priya\", \"Arjun\"]" "qn redo writes a quoted attendee list"
+  assert_contains "$redo_text" "sharing: full" "qn redo writes sharing"
+  assert_contains "$redo_text" "capture: " "qn redo writes capture"
+  assert_contains "$redo_text" "warnings: [" "qn redo writes warnings"
+  for heading in "Summary" "Decisions" "My action items" "Their action items" "Open questions"; do
+    assert_contains "$redo_text" "## $heading" "qn redo writes the $heading section"
+  done
+  assert_contains "$redo_text" "## Transcript" "qn redo writes a transcript block"
+  assert_contains "$redo_text" "[00:03] Them: " "qn redo keeps the transcript lines"
 else
-  skip "qn redo" "no redo subcommand in qn yet"
+  fail "qn redo" "no redo subcommand in qn"
 fi
 
 # 3. qn play, under the QN_DRY_RUN convention.
@@ -318,7 +361,7 @@ if qn_has play; then
   assert_eq "0" "$CAPTURE_CODE" "qn play exits 0 when the recording exists"
   assert_contains "$(cat "$TMPROOT/play.out")" "2026-08-20-1535-partner-intro" "qn play names the recording"
 else
-  skip "qn play" "no play subcommand in qn yet"
+  fail "qn play" "no play subcommand in qn"
 fi
 
 # 4. qn index builds .index.db.
@@ -329,7 +372,7 @@ if qn_has index; then
   assert_eq "0" "$CAPTURE_CODE" "qn index exits 0"
   assert_file "$QN_NOTES_DIR/.index.db" "qn index creates .index.db"
 else
-  skip "qn index" "no index subcommand in qn yet"
+  fail "qn index" "no index subcommand in qn"
 fi
 
 # 5. qn pending lists the meetings whose consent says local.
@@ -337,10 +380,142 @@ if qn_has pending; then
   capture 30 "$TMPROOT/pending.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
     /bin/bash "$QN" pending
   assert_eq "0" "$CAPTURE_CODE" "qn pending exits 0"
-  assert_contains "$(cat "$TMPROOT/pending.out")" "$LOCAL_ID" "qn pending lists the held meeting"
+  assert_contains "$(cat "$TMPROOT/pending.out")" "$LOCAL_ID" "qn pending lists the meeting whose consent says local"
+  assert_missing "$(cat "$TMPROOT/pending.out")" "$FULL_ID" "qn pending leaves out a meeting whose consent says full"
 else
-  skip "qn pending" "no pending subcommand in qn yet"
+  fail "qn pending" "no pending subcommand in qn"
 fi
+
+# --------------------------------------------------------------------------
+section "consent, end to end"
+# --------------------------------------------------------------------------
+# Everything below feeds a note that `qn` itself wrote to the parser that the
+# MCP server itself uses. Nothing here reads a fixture file, so a change to
+# either side that breaks the other shows up as a failure.
+guard_notes_dir
+
+RT_DIR="$TMPROOT/roundtrip"
+CLAUDE_LOG="$TMPROOT/claude-calls.log"
+python3 "$HERE/fixtures.py" "$RT_DIR" >/dev/null 2>&1
+
+# What the real parser makes of a note file. It returns None for anything it
+# refuses to index.
+parse_note_repr() {
+  python3 -c "import sys; sys.path.insert(0, '$ROOT/mcp'); import index; print(index.parse_note(sys.argv[1]))" "$1"
+}
+
+# One field, as the real parser reads it back. EXCLUDED means the parser
+# refused the note, which is the right answer for sharing: local.
+parsed_field() { # parsed_field <note> <title|attendees|sharing>
+  python3 - "$1" "$2" <<PYEOF
+import sys
+sys.path.insert(0, "$ROOT/mcp")
+import index
+note = index.parse_note(sys.argv[1])
+if note is None:
+    print("EXCLUDED")
+elif sys.argv[2] == "attendees":
+    print(", ".join(note["attendees"]))
+else:
+    print(note[sys.argv[2]])
+PYEOF
+}
+
+# One frontmatter field, straight from the real frontmatter reader. This is
+# how a held note is checked, because the parser above will not return it.
+frontmatter_field() { # frontmatter_field <note> <key>
+  python3 - "$1" "$2" <<PYEOF
+import sys
+sys.path.insert(0, "$ROOT/mcp")
+import index
+with open(sys.argv[1], encoding="utf-8") as handle:
+    fields, _ = index.parse_frontmatter(handle.read())
+value = fields.get(sys.argv[2], "")
+print(", ".join(value) if isinstance(value, list) else value)
+PYEOF
+}
+
+# Ids in an index file, space separated.
+db_ids() {
+  python3 - "$1" <<'PYEOF'
+import sqlite3, sys
+connection = sqlite3.connect(sys.argv[1])
+print(" ".join(row[0] for row in connection.execute("SELECT id FROM meetings ORDER BY id")))
+PYEOF
+}
+
+# Rebuild one recording's note with a given consent, under the stubs.
+redo_with_consent() { # redo_with_consent <notes-dir> <id> <consent> <outfile>
+  local dir="$1" id="$2" consent="$3" out="$4"
+  local work="$dir/.recordings/$id"
+  printf '%s\n' "$consent" > "$work/consent"
+  rm -f "$dir/$id.md" "$work/summary.md" "$CLAUDE_LOG"
+  capture 60 "$out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$dir" \
+    QN_CLAUDE_LOG="$CLAUDE_LOG" QN_MODEL="$TMPROOT/model.bin" \
+    QN_VAD_MODEL="$TMPROOT/no-vad.bin" /bin/bash "$QN" redo "$work"
+}
+
+if qn_has redo; then
+  rt_note="$RT_DIR/$FULL_ID.md"
+
+  # --- consent: full. Claude is called, and the note is indexable. ---------
+  redo_with_consent "$RT_DIR" "$FULL_ID" full "$TMPROOT/rt-full.out"
+  assert_eq "0" "$CAPTURE_CODE" "qn redo exits 0 when consent says full"
+  assert_file "$rt_note" "qn redo writes a real note when consent says full"
+  assert_file "$CLAUDE_LOG" "consent full calls the claude stub"
+  assert_contains "$(cat "$rt_note")" "sharing: full" "the note qn wrote says sharing: full"
+  assert_contains "$(parse_note_repr "$rt_note")" "'sharing': 'full'" \
+    "the real parser accepts the note qn wrote"
+  assert_eq "roadmap review" "$(parsed_field "$rt_note" title)" \
+    "the parser reads back the title qn wrote"
+  assert_eq "Priya, Arjun" "$(parsed_field "$rt_note" attendees)" \
+    "the parser reads back the attendees qn wrote"
+  assert_eq "full" "$(parsed_field "$rt_note" sharing)" \
+    "the parser reads back sharing: full"
+
+  # --- consent: local. Claude is never called, and the note stays out. -----
+  redo_with_consent "$RT_DIR" "$FULL_ID" local "$TMPROOT/rt-local.out"
+  assert_eq "0" "$CAPTURE_CODE" "qn redo exits 0 when consent says local"
+  assert_file "$rt_note" "qn redo writes a real note when consent says local"
+  if [ -e "$CLAUDE_LOG" ]; then
+    fail "consent local never calls the claude stub" "the stub logged: $(cat "$CLAUDE_LOG")"
+  else
+    pass "consent local never calls the claude stub"
+  fi
+  rt_local_text="$(cat "$rt_note")"
+  assert_contains "$rt_local_text" "sharing: local" "the note qn wrote says sharing: local"
+  assert_missing "$rt_local_text" "## Summary" "a held note carries no AI sections"
+  assert_contains "$rt_local_text" "## Transcript" "a held note keeps its transcript"
+  assert_eq "EXCLUDED" "$(parsed_field "$rt_note" sharing)" \
+    "the real parser refuses to index the held note"
+  assert_eq "None" "$(parse_note_repr "$rt_note")" "parse_note returns None for the held note"
+  assert_eq "local" "$(frontmatter_field "$rt_note" sharing)" \
+    "the frontmatter reader reads back sharing: local"
+  assert_eq "roadmap review" "$(frontmatter_field "$rt_note" title)" \
+    "the frontmatter reader reads back the title qn wrote"
+  assert_eq "Priya, Arjun" "$(frontmatter_field "$rt_note" attendees)" \
+    "the frontmatter reader reads back the attendees qn wrote"
+
+  # The index over that same directory must hold the full note and nothing
+  # else this recording produced.
+  capture 60 "$TMPROOT/rt-index.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$RT_DIR" \
+    /bin/bash "$QN" index
+  assert_eq "0" "$CAPTURE_CODE" "qn index exits 0 over the round-trip corpus"
+  assert_missing " $(db_ids "$RT_DIR/.index.db") " " $FULL_ID " \
+    "the held note qn wrote is absent from .index.db"
+else
+  fail "qn redo round-trip" "no redo subcommand in qn"
+fi
+
+# The fixture corpus: every LOCAL id must be missing from the index that
+# `qn index` built above, and the full ids must be there.
+indexed_ids=" $(db_ids "$QN_NOTES_DIR/.index.db") "
+LOCAL_IDS="$(python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import fixtures; print(' '.join(fixtures.LOCAL_IDS))" "$HERE")"
+for held in $LOCAL_IDS; do
+  assert_missing "$indexed_ids" " $held " "sharing: local keeps $held out of .index.db"
+done
+assert_contains "$indexed_ids" " $FULL_ID " "a shareable meeting is in .index.db"
+assert_contains "$indexed_ids" " $NOTES_ONLY_ID " "another shareable meeting is in .index.db"
 
 # 6. Slug rule: "SDK Sync!!" becomes sdk-sync. The rule is read out of qn
 #    itself, because running the record path would start a real recording.

@@ -36,10 +36,23 @@ _DURATION = re.compile(r"Duration:\s*(\d+):(\d+):([\d.]+)")
 class Measurement:
     """What ffmpeg could tell us about one audio file."""
 
-    def __init__(self, seconds: float | None, mean_db: float | None, peak_db: float | None):
+    def __init__(
+        self,
+        seconds: float | None,
+        mean_db: float | None,
+        peak_db: float | None,
+        *,
+        on_disk: bool = False,
+        readable: bool = True,
+    ):
         self.seconds = seconds
         self.mean_db = mean_db
         self.peak_db = peak_db
+        # A file can exist and still be unreadable — an interrupted recording
+        # has no moov atom. Calling that "missing" sends people looking for a
+        # file that is sitting right there with an hour of audio in it.
+        self.on_disk = on_disk
+        self.readable = readable
 
     @property
     def present(self) -> bool:
@@ -50,12 +63,21 @@ def measure(path: pathlib.Path) -> Measurement:
     """Read length and loudness out of one audio file."""
     if not path.exists() or path.stat().st_size == 0:
         return Measurement(None, None, None)
-    proc = subprocess.run(
-        ["ffmpeg", "-nostdin", "-hide_banner", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
-        capture_output=True,
-        text=True,
-    )
-    return _parse(proc.stderr)
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-nostdin", "-hide_banner", "-i", str(path), "-af",
+             "volumedetect", "-f", "null", "-"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        # No ffmpeg. Say so once, rather than dying with a traceback.
+        return Measurement(None, None, None, on_disk=True, readable=False)
+
+    found = _parse(proc.stderr)
+    found.on_disk = True
+    found.readable = proc.returncode == 0 and found.seconds is not None
+    return found
 
 
 def _parse(ffmpeg_stderr: str) -> Measurement:
@@ -76,7 +98,13 @@ def judge(measurements: dict[str, Measurement]) -> list[str]:
     for track, who in TRACKS:
         found = measurements.get(track)
         if found is None or not found.present:
-            warnings.append(f"no audio from {who} — the {track} track is missing")
+            if found is not None and found.on_disk:
+                warnings.append(
+                    f"the {track} track is damaged and cannot be read — "
+                    "the recording was probably interrupted"
+                )
+            else:
+                warnings.append(f"no audio from {who} — the {track} track is missing")
             continue
         if found.seconds is not None and found.seconds < MIN_USEFUL_SECONDS:
             warnings.append(f"the {track} track is only {found.seconds:.0f}s long")

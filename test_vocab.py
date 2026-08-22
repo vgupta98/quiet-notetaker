@@ -168,9 +168,6 @@ class RefreshOnDisk(unittest.TestCase):
         self.assertEqual(vocab.as_prompt(["on-call", "Braze"]), "on-call, Braze")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class ScaffoldingIsNotVocabulary(unittest.TestCase):
     """The note template's own words must never be learned.
@@ -239,3 +236,6 @@ class OwnerPrefixesDoNotLeak(unittest.TestCase):
 
     def test_the_owner_name_itself_is_still_seen(self):
         self.assertIn("Priya", vocab.terms_in("- [ ] Priya: Share the doc"))
+
+if __name__ == "__main__":
+    unittest.main()

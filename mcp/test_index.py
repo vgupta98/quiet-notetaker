@@ -168,9 +168,12 @@ class FrontmatterTests(unittest.TestCase):
         self.assertEqual(fields, {})
         self.assertTrue(body.startswith("# Plain"))
 
-    def test_missing_frontmatter_falls_back_to_the_id(self) -> None:
+    def test_missing_title_and_date_fall_back_to_the_id(self) -> None:
+        # A shareable note may still leave keys out. The id carries the stamp
+        # and the `# ` heading carries the title.
+        text = "---\nsharing: full\n---\n\n# Plain Talk\n\n## Summary\n- hi\n"
         with tempfile.TemporaryDirectory() as directory:
-            path = write_note(directory, "2026-01-02-0930-plain-talk", "# Plain Talk\n\n## Summary\n- hi\n")
+            path = write_note(directory, "2026-01-02-0930-plain-talk", text)
             note = index.parse_note(path)
             self.assertIsNotNone(note)
             self.assertEqual(note["title"], "Plain Talk")
@@ -263,6 +266,209 @@ class SharingTests(IndexTestCase):
         self.assertEqual(index.search(self.db, "retry budget")["total"], 0)
         with self.assertRaises(LookupError):
             index.get(self.db, "2026-08-20-1535-sdk-sync")
+
+
+class SharingGateTests(unittest.TestCase):
+    """Only `sharing: full` opens the index. Everything else is private.
+
+    Each case writes one note into a fresh directory, indexes it, and then
+    checks every door: the parser, the meetings table, search, and the
+    transcript tool.
+    """
+
+    SECRET = "hushword"
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.notes = self._temporary.name
+        self.db = index.index_path(self.notes)
+        self.addCleanup(self._temporary.cleanup)
+
+    @staticmethod
+    def note(frontmatter: str) -> str:
+        """Wrap a frontmatter block around a body that holds the secret word."""
+        return (
+            f"{frontmatter}\n"
+            "# Held Chat\n\n"
+            "## Summary\n"
+            f"- the {SharingGateTests.SECRET} plan\n\n"
+            "## My action items\n"
+            f"- [ ] {SharingGateTests.SECRET} the salary review\n\n"
+            "---\n\n"
+            "## Transcript\n\n"
+            f"{FENCE}\n"
+            f"[00:02] Me: {SharingGateTests.SECRET}, this one stays on my mac\n"
+            f"{FENCE}\n"
+        )
+
+    def refuse(self, text: str) -> None:
+        """Assert this note text reaches no part of the index."""
+        meeting_id = "2026-08-22-1100-private"
+        path = write_note(self.notes, meeting_id, text)
+        self.assertIsNone(index.parse_note(path), "parse_note let the note through")
+
+        index.refresh(self.db, self.notes)
+        connection = sqlite3.connect(self.db)
+        try:
+            rows = [row[0] for row in connection.execute("SELECT id FROM meetings")]
+            stored = list(connection.execute("SELECT * FROM meetings_fts"))
+        finally:
+            connection.close()
+        self.assertEqual(rows, [])
+        self.assertEqual(stored, [])
+        self.assertEqual(index.search(self.db, self.SECRET, limit=50)["total"], 0)
+        self.assertEqual(index.actions(self.db, status="all", whose="all")["total"], 0)
+        with self.assertRaises(LookupError):
+            index.transcript(self.db, meeting_id)
+
+    def accept(self, text: str) -> dict:
+        """Assert this note text is indexed, and return the indexed note."""
+        meeting_id = "2026-08-22-1100-shared"
+        path = write_note(self.notes, meeting_id, text)
+        note = index.parse_note(path)
+        self.assertIsNotNone(note, "parse_note refused a shareable note")
+        index.refresh(self.db, self.notes)
+        self.assertEqual(index.search(self.db, self.SECRET, limit=50)["total"], 1)
+        return note
+
+    # ---------------------------------------------------------------- refuse
+
+    def test_a_newline_inside_a_value_does_not_open_the_index(self) -> None:
+        # The real bad file: an attendee name carries a newline and a `---`,
+        # so the block ends early and `sharing: local` lands in the body.
+        broken = self.note(
+            '---\n'
+            'title: "Held Chat"\n'
+            'date: 2026-08-22 11:00\n'
+            'attendees: ["Priya\n---\nx"]\n'
+            'sharing: local\n'
+            'capture: ok\n'
+            'warnings: []\n'
+            '---\n'
+        )
+        # Prove the file really is broken before trusting the assertions.
+        fields, _ = index.parse_frontmatter(broken)
+        self.assertNotIn("sharing", fields)
+        self.refuse(broken)
+
+    def test_a_trailing_comment_does_not_hide_local(self) -> None:
+        self.refuse(self.note("---\nsharing: local # keep\n---\n"))
+
+    def test_upper_case_local_is_still_local(self) -> None:
+        self.refuse(self.note("---\nsharing: LOCAL\n---\n"))
+
+    def test_padded_local_is_still_local(self) -> None:
+        self.refuse(self.note("---\nsharing:  local  \n---\n"))
+
+    def test_a_quoted_local_is_still_local(self) -> None:
+        self.refuse(self.note('---\nsharing: "local"\n---\n'))
+
+    def test_sharing_none_is_refused(self) -> None:
+        self.refuse(self.note("---\nsharing: none\n---\n"))
+
+    def test_a_note_without_frontmatter_is_refused(self) -> None:
+        self.refuse(self.note(""))
+
+    def test_a_note_without_a_sharing_key_is_refused(self) -> None:
+        self.refuse(self.note("---\ntitle: \"Held Chat\"\ncapture: ok\n---\n"))
+
+    def test_an_unterminated_block_is_refused(self) -> None:
+        # No closing `---`, so nothing in this file is frontmatter.
+        self.refuse("---\ntitle: \"Held Chat\"\nsharing: full\n\n# Held Chat\n"
+                    f"\n## Summary\n- the {self.SECRET} plan\n")
+
+    def test_two_sharing_keys_take_the_safest_value(self) -> None:
+        self.refuse(self.note("---\nsharing: full\nsharing: local\n---\n"))
+
+    def test_two_sharing_keys_in_the_other_order(self) -> None:
+        self.refuse(self.note("---\nsharing: local\nsharing: full\n---\n"))
+
+    def test_an_unknown_value_is_refused(self) -> None:
+        self.refuse(self.note("---\nsharing: maybe\n---\n"))
+
+    def test_an_empty_value_is_refused(self) -> None:
+        self.refuse(self.note("---\nsharing:\n---\n"))
+
+    def test_a_value_that_only_starts_with_full_is_refused(self) -> None:
+        self.refuse(self.note("---\nsharing: fullish\n---\n"))
+
+    def test_a_stray_line_in_the_block_is_refused(self) -> None:
+        # A line with no `key:` means this block is not the frontmatter.
+        self.refuse(self.note("---\nsharing: full\nx\"]\n---\n"))
+
+    def test_a_sharing_line_in_the_body_is_refused(self) -> None:
+        # A second block below says the one above was cut short.
+        self.refuse(self.note("---\nsharing: full\n---\nsharing: local\n"))
+
+    # ---------------------------------------------------------------- accept
+
+    def test_a_well_formed_full_note_is_indexed(self) -> None:
+        note = self.accept(self.note(
+            '---\n'
+            'title: "Held Chat"\n'
+            'date: 2026-08-22 11:00\n'
+            'attendees: ["Priya", "Arjun"]\n'
+            'sharing: full\n'
+            'capture: ok\n'
+            'warnings: []\n'
+            '---\n'
+        ))
+        self.assertEqual(note["sharing"], "full")
+        self.assertEqual(note["attendees"], ["Priya", "Arjun"])
+
+    def test_a_minimal_full_note_is_indexed(self) -> None:
+        self.accept(self.note("---\nsharing: full\n---\n"))
+
+    def test_a_full_note_with_a_comment_line_is_indexed(self) -> None:
+        self.accept(self.note("---\n# written by qn\nsharing: full\n---\n"))
+
+    def test_a_full_note_with_a_trailing_comment_is_indexed(self) -> None:
+        self.accept(self.note("---\nsharing: full # approved\n---\n"))
+
+    def test_a_title_with_an_apostrophe_is_indexed(self) -> None:
+        # Unquoted free text must not read as a broken quote.
+        self.accept(self.note("---\ntitle: Priya's review\nsharing: full\n---\n"))
+
+
+class QuerySafetyTests(IndexTestCase):
+    """A query must not be able to lie about which column it matched.
+
+    In the standard corpus `kestrel` sits only in transcripts and `retry` sits
+    in the sdk-sync notes.
+    """
+
+    ESCAPE = "retry) OR {transcript_text} : (kestrel"
+
+    def test_a_brace_query_cannot_forge_matched_in(self) -> None:
+        results = index.search(self.db, self.ESCAPE, limit=50)["results"]
+        for hit in results:
+            if hit["matched_in"] != "notes":
+                continue
+            text = " ".join(index.get(self.db, hit["id"])["sections"].values()).lower()
+            self.assertIn("retry", text, f"{hit['id']} claimed a notes match it has not")
+        self.assertNotIn(
+            "2026-05-04-1000-old-roadmap",
+            [hit["id"] for hit in results if hit["matched_in"] == "notes"],
+        )
+
+    def test_a_brace_query_still_reads_as_words(self) -> None:
+        results = index.search(self.db, self.ESCAPE, limit=50)["results"]
+        self.assertIn("2026-08-20-1535-sdk-sync", [hit["id"] for hit in results])
+
+    def test_a_brace_in_a_plain_query_does_not_raise(self) -> None:
+        self.assertEqual(index.search(self.db, "{retry} budget")["total"], 1)
+        self.assertEqual(index.search(self.db, "}}}")["total"], 0)
+
+    def test_multi_word_queries_still_want_every_word(self) -> None:
+        self.assertEqual(index.search(self.db, "retry budget")["total"], 1)
+        self.assertEqual(index.search(self.db, "retry zzzznothing")["total"], 0)
+
+    def test_a_quoted_phrase_still_works(self) -> None:
+        self.assertEqual(index.search(self.db, '"retry budget"')["total"], 1)
+        self.assertEqual(index.search(self.db, '"budget retry"')["total"], 0)
+
+    def test_or_still_works(self) -> None:
+        self.assertEqual(index.search(self.db, "zzzznothing OR kestrel", limit=50)["total"], 2)
 
 
 class RefreshTests(IndexTestCase):

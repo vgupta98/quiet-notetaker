@@ -19,9 +19,9 @@ TRACKS = (("them", "Them"), ("me", "Me"))
 TURN_BREAK_MS = 8_000
 
 
-def read_segments(recording_dir: pathlib.Path) -> list[tuple[int, str, str]]:
-    """Every transcribed segment from both tracks, as (start_ms, speaker, text)."""
-    segments: list[tuple[int, str, str]] = []
+def read_segments(recording_dir: pathlib.Path) -> list[tuple[int, int, str, str]]:
+    """Every segment from both tracks, as (start_ms, end_ms, speaker, text)."""
+    segments: list[tuple[int, int, str, str]] = []
     for track, speaker in TRACKS:
         path = recording_dir / f"{track}.json"
         if not path.exists():
@@ -30,23 +30,29 @@ def read_segments(recording_dir: pathlib.Path) -> list[tuple[int, str, str]]:
         for segment in data.get("transcription", []):
             text = segment.get("text", "").strip()
             if text:
-                segments.append((segment["offsets"]["from"], speaker, text))
+                offsets = segment["offsets"]
+                segments.append((offsets["from"], offsets["to"], speaker, text))
     return segments
 
 
-def build_turns(segments: list[tuple[int, str, str]]) -> list[tuple[int, str, str]]:
-    """Group segments into speaker turns, breaking on a change or a long pause."""
+def build_turns(segments: list[tuple[int, int, str, str]]) -> list[tuple[int, str, str]]:
+    """Group segments into speaker turns, breaking on a change or a long pause.
+
+    The gap is measured from the end of the previous segment. Measuring from
+    its start made every segment longer than TURN_BREAK_MS look like a pause,
+    and whisper emits segments up to 30 seconds long.
+    """
     turns: list[list] = []
     previous_end: dict[str, int] = {}
 
-    for start, speaker, text in sorted(segments, key=lambda s: s[0]):
+    for start, end, speaker, text in sorted(segments, key=lambda s: s[0]):
         same_speaker = bool(turns) and turns[-1][1] == speaker
         paused = start - previous_end.get(speaker, start) >= TURN_BREAK_MS
         if same_speaker and not paused:
             turns[-1][2] += " " + text
         else:
             turns.append([start, speaker, text])
-        previous_end[speaker] = start
+        previous_end[speaker] = max(end, start)
 
     return [(start, speaker, text) for start, speaker, text in turns]
 

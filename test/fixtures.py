@@ -46,6 +46,11 @@ LONG_TRANSCRIPT_ID = "2026-06-18-1245-long-retro"
 #: Meetings held back from the index (sharing: local, consent: local).
 LOCAL_IDS = ["2026-04-15-1400-vendor-call", "2026-07-30-1015-hiring-debrief"]
 
+#: Dropped in every corpus. ``_guard`` writes into a directory that is empty,
+#: missing, or carries this file. Everything else is refused.
+MARKER_NAME = ".qn-fixture-corpus"
+MARKER_TEXT = "written by test/fixtures.py — safe to delete and rebuild\n"
+
 #: The five headings every ``sharing: full`` note carries, in order.
 SECTION_NAMES = [
     "Summary",
@@ -329,16 +334,17 @@ def _date_of(meeting_id):
                                parts[3][:2], parts[3][2:])
 
 
-def _yaml_list(values):
-    if not values:
-        return "[]"
-    return "[%s]" % ", ".join(values)
+def _yaml_string(value):
+    """Quote a scalar the way ``qn``'s ``yaml_string`` quotes it."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return '"%s"' % escaped
 
 
 def _yaml_quoted_list(values):
+    """Quote a list the way ``qn``'s ``yaml_list`` quotes it."""
     if not values:
         return "[]"
-    return "[%s]" % ", ".join('"%s"' % value for value in values)
+    return "[%s]" % ", ".join(_yaml_string(value) for value in values)
 
 
 def _clock(seconds):
@@ -427,9 +433,9 @@ def _note_text(spec, date, sections, transcript_lines):
     people = ", ".join(spec["attendees"])
     head = [
         "---",
-        "title: %s" % spec["title"],
+        "title: %s" % _yaml_string(spec["title"]),
         "date: %s" % date,
-        "attendees: %s" % _yaml_list(spec["attendees"]),
+        "attendees: %s" % _yaml_quoted_list(spec["attendees"]),
         "sharing: %s" % spec["sharing"],
         "capture: %s" % spec["capture"],
         "warnings: %s" % _yaml_quoted_list(spec["warnings"]),
@@ -478,10 +484,29 @@ def _whisper_json(segments, speaker):
 # ---------------------------------------------------------------------------
 
 def _guard(root):
+    """Refuse any directory that is not ours to empty.
+
+    The generator unlinks every ``*.md`` in the target and removes
+    ``.recordings`` whole. A wrong argument therefore destroys data. So the
+    target must be one of three things: missing, empty, or a corpus this file
+    wrote before, which it recognises by the marker it drops in every corpus.
+    """
     home = pathlib.Path.home().resolve()
     if root == home or root == home / "Meetings":
         raise SystemExit(
             "fixtures.py: refusing to write the corpus to %s" % root)
+
+    if not root.exists():
+        return
+    if not root.is_dir():
+        raise SystemExit(
+            "fixtures.py: %s is not a directory" % root)
+    if (root / MARKER_NAME).is_file():
+        return
+    if any(root.iterdir()):
+        raise SystemExit(
+            "fixtures.py: %s is not empty and holds no %s — refusing to "
+            "delete files this script did not write" % (root, MARKER_NAME))
 
 
 def build_corpus(path, count=CORE_COUNT):
@@ -505,6 +530,10 @@ def build_corpus(path, count=CORE_COUNT):
             index.unlink()
     root.mkdir(parents=True, exist_ok=True)
     recordings.mkdir(parents=True, exist_ok=True)
+    # The marker says "this directory is a fixture corpus". _guard reads it on
+    # the next run, so a corpus can be rebuilt in place while any other
+    # directory with files in it is refused.
+    (root / MARKER_NAME).write_text(MARKER_TEXT, encoding="utf-8")
 
     built = []
     for index, spec in enumerate(specs_for(count)):

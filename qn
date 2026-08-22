@@ -37,9 +37,12 @@ slugify() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//; s/-$//'
 }
 
-# YAML needs quotes escaped; titles come from humans and calendars.
+# YAML needs quotes escaped, and control characters removed entirely. A bare
+# newline here closes the frontmatter block early, which drops `sharing:` into
+# the body and makes a private meeting look shareable. Titles and attendee
+# names come from calendars, so they are not ours to trust.
 yaml_string() {
-  printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  printf '"%s"' "$(printf '%s' "$1" | tr '\n\r\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g')"
 }
 
 # Turn "Priya, Arjun" into a YAML inline list.
@@ -67,6 +70,18 @@ resolve_recording() {
 
 title_from_id() { printf '%s' "$1" | cut -d- -f5- | tr '-' ' '; }
 
+# Two meetings can start in the same minute — watch mode does it routinely
+# when the mic drops and returns. Reusing the folder makes AVAssetWriter
+# refuse to start, and both tracks come out empty with no warning.
+unique_id() {
+  local base="$1" candidate="$1" attempt=2
+  while [ -e "$REC_DIR/$candidate" ]; do
+    candidate="$base-$attempt"
+    attempt=$((attempt + 1))
+  done
+  printf '%s' "$candidate"
+}
+
 when_from_id() {
   date -j -f '%Y-%m-%d-%H%M' "$(printf '%s' "$1" | cut -d- -f1-4)" '+%d %b %Y, %H:%M' 2>/dev/null \
     || printf 'unknown time'
@@ -85,18 +100,25 @@ ask_consent() {
     return 0
   fi
   (
-    answer="$(osascript 2>/dev/null <<OSA || true
-display dialog "Recording: $title
+    # The title comes from a calendar invite, so anyone who can send you a
+    # meeting controls this string. It is passed as an argument and read with
+    # `on run argv`; interpolating it into the script would let an invite
+    # titled `x" & (do shell script "...") & "` run commands on this Mac.
+    answer="$(osascript - "$title" 2>/dev/null <<'OSA' || true
+on run argv
+  set meetingTitle to item 1 of argv
+  display dialog "Recording: " & meetingTitle & "
 
 Tell the meeting you are taking AI notes.
 
 Full notes  — send the transcript to Claude
 Local only  — keep everything on this Mac
 Do not record — delete the audio" ¬
-  with title "Quiet Notetaker" ¬
-  buttons {"Do not record", "Local only", "Full notes"} ¬
-  default button "Full notes" ¬
-  giving up after 300
+    with title "Quiet Notetaker" ¬
+    buttons {"Do not record", "Local only", "Full notes"} ¬
+    default button "Full notes" ¬
+    giving up after 300
+end run
 OSA
 )"
     case "$answer" in
@@ -118,8 +140,15 @@ wait_for_consent() {
   if [ ! -s "$work/consent" ]; then printf 'local\n' > "$work/consent"; fi
 }
 
+# Anything we cannot positively read as a decision is held. A crash, a reboot,
+# or a quit while the dialog was open must never resolve to "send it".
 read_consent() {
-  if [ -s "$1/consent" ]; then tr -d '[:space:]' < "$1/consent"; else printf 'full'; fi
+  local answer=""
+  if [ -s "$1/consent" ]; then answer="$(tr -d '[:space:]' < "$1/consent")"; fi
+  case "$answer" in
+    full|local|none) printf '%s' "$answer" ;;
+    *)               printf 'local' ;;
+  esac
 }
 
 # --------------------------------------------------------------- transcribe
@@ -193,7 +222,12 @@ write_note() {
     printf '\n\n---\n\n## Transcript\n\n```\n'
     cat "$work/transcript.txt"
     printf '```\n'
-  } > "$note"
+  } > "$note.new"
+
+  # A hand-edited note is the user's, not ours. Keep the old one, and swap
+  # atomically so a crash mid-write cannot leave a truncated file.
+  if [ -f "$note" ]; then cp "$note" "$note.bak"; fi
+  mv "$note.new" "$note"
 }
 
 # Everything that happens after a recording stops.
@@ -202,6 +236,17 @@ process_recording() {
   local id note
   id="$(basename "$work")"
   note="$NOTES_DIR/$id.md"
+
+  # The dialog waits longer than we do, so "do not record" can arrive after we
+  # gave up waiting. Honour it before spending a minute transcribing.
+  local sharing
+  sharing="$(read_consent "$work")"
+  if [ "$sharing" = "none" ]; then
+    rm -rf "$work"
+    rm -f "$note"
+    warn "discarded at your request — the audio is gone"
+    return 0
+  fi
 
   local report capture warnings
   report="$(python3 "$HERE/health.py" "$work")"
@@ -229,9 +274,6 @@ for w in json.load(sys.stdin)["warnings"]:
   if [ -z "$people" ] && [ -s "$work/attendees.txt" ]; then
     people="$(cat "$work/attendees.txt")"
   fi
-
-  local sharing
-  sharing="$(read_consent "$work")"
 
   if [ "$sharing" = "full" ]; then
     step "writing notes"
@@ -273,7 +315,7 @@ cmd_record() {
   local slug id work
   slug="$(slugify "$title")"
   if [ -z "$slug" ]; then slug="meeting"; fi
-  id="$(date '+%Y-%m-%d-%H%M')-$slug"
+  id="$(unique_id "$(date '+%Y-%m-%d-%H%M')-$slug")"
   work="$REC_DIR/$id"
   if [ -n "${QN_DRY_RUN:-}" ]; then
     printf 'id=%s\n' "$id"
@@ -288,13 +330,36 @@ cmd_record() {
   process_recording "$work" "$title" "$people"
 }
 
+# Quitting must not leave the microphone open or a half-written file behind.
+watch_cleanup() {
+  local lock="$REC_DIR/.recording" waited=0 recorder=""
+  if [ -s "$lock.pid" ]; then
+    recorder="$(cat "$lock.pid")"
+    kill -TERM "$recorder" 2>/dev/null || true
+    # Give it time to close the file properly. A killed AVAssetWriter leaves
+    # an .m4a with no moov atom, which nothing can play or transcribe.
+    while kill -0 "$recorder" 2>/dev/null && [ "$waited" -lt 20 ]; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+    if [ -s "$lock" ]; then
+      warn "recording saved — run: qn redo $(basename "$(cat "$lock")")"
+    fi
+  fi
+  rm -f "$lock" "$lock.pid"
+}
+
 cmd_watch() {
   [ -x "$WATCHER" ] || die "the watcher is not built — run: make build"
   [ -x "$RECORDER" ] || die "the recorder is not built — run: make build"
   mkdir -p "$REC_DIR"
 
   local lock="$REC_DIR/.recording"
-  rm -f "$lock"
+  if [ -s "$lock.pid" ] && kill -0 "$(cat "$lock.pid")" 2>/dev/null; then
+    die "another qn watch is already recording — stop it first"
+  fi
+  rm -f "$lock" "$lock.pid"
+  trap watch_cleanup INT TERM EXIT
   step "watching for meetings — ctrl-c to stop"
 
   "$WATCHER" --ignore-while "$lock" | while IFS= read -r line; do  # noqa: seam
@@ -310,10 +375,15 @@ cmd_watch() {
         fi
         if [ -z "$title" ]; then title="meeting"; fi
 
-        id="$(date '+%Y-%m-%d-%H%M')-$(slugify "$title")"
+        id="$(slugify "$title")"
+        if [ -z "$id" ]; then id="meeting"; fi
+        id="$(unique_id "$(date '+%Y-%m-%d-%H%M')-$id")"
         work="$REC_DIR/$id"
         mkdir -p "$work"
         if [ -n "$people" ]; then printf '%s\n' "$people" > "$work/attendees.txt"; fi
+        # Held until you say otherwise. Written before a single sample is
+        # captured, so a crash in the next second cannot leave it shareable.
+        printf 'local\n' > "$work/consent"
         printf '%s' "$work" > "$lock"
 
         loud "$title"
@@ -379,21 +449,28 @@ cmd_play() {
   work="$(resolve_recording "$1")"
 
   local sources=()
+  local tracks=0
   local track
   for track in them me; do
-    if [ -s "$work/$track.m4a" ]; then sources+=(-ss "$seek" -i "$work/$track.m4a"); fi
+    if [ -s "$work/$track.m4a" ]; then
+      sources+=(-ss "$seek" -i "$work/$track.m4a")
+      tracks=$((tracks + 1))
+    fi
   done
-  if [ "${#sources[@]}" -eq 0 ]; then die "no audio in $work"; fi
+  if [ "$tracks" -eq 0 ]; then die "no audio in $work"; fi
 
+  # Count tracks, not array elements: each track contributes four elements,
+  # so testing the array length mixed one input into a two-input amix.
   local mix=()
-  if [ "${#sources[@]}" -gt 2 ]; then mix=(-filter_complex "amix=inputs=2:normalize=0"); fi
+  if [ "$tracks" -gt 1 ]; then mix=(-filter_complex "amix=inputs=2:normalize=0"); fi
 
-  local clip
-  clip="$(mktemp -t qnplay).wav"
+  local clipdir clip
+  clipdir="$(mktemp -d -t qnplay)"
+  clip="$clipdir/clip.wav"
   if [ -n "${QN_DRY_RUN:-}" ]; then
     printf 'ffmpeg %s %s -t %s %s\n' "${sources[*]}" "${mix[*]}" "$PLAY_WINDOW" "$clip"
     printf 'afplay %s\n' "$clip"
-    rm -f "$clip"
+    rm -rf "$clipdir"
     return 0
   fi
 
@@ -401,7 +478,7 @@ cmd_play() {
     -t "$PLAY_WINDOW" "$clip"
   step "playing $seek onwards — ctrl-c to stop"
   afplay "$clip" || true
-  rm -f "$clip"
+  rm -rf "$clipdir"
 }
 
 cmd_vocab() {
@@ -447,25 +524,38 @@ attendees=""
 sharing="full"
 while [ $# -gt 0 ]; do
   case "${1:-}" in
-    --with)  attendees="${2:-}"; shift 2 ;;
+    --with)  [ $# -ge 2 ] || die "usage: qn --with \"Name, Name\" [title...]"
+             attendees="$2"; shift 2 ;;
     --local) sharing="local"; shift ;;
     *)       break ;;
   esac
 done
 
-case "${1:-}" in
-  watch)   cmd_watch ;;
-  redo)    shift; [ $# -ge 1 ] || die "usage: qn redo <id>"; cmd_redo "$1" "$attendees" ;;
-  approve) shift; [ $# -ge 1 ] || die "usage: qn approve <id>"; cmd_approve "$1" ;;
-  pending) cmd_pending ;;
-  play)    shift; [ $# -ge 1 ] || die "usage: qn play <id> [MM:SS]"; cmd_play "$1" "${2:-00:00}" ;;
-  index)   cmd_index ;;
-  vocab)   cmd_vocab ;;
-  doctor)  cmd_doctor ;;
-  *)
-    need whisper-cli "brew install whisper-cpp"
-    need claude "install the Claude CLI"
-    [ -f "$MODEL" ] || die "the speech model is missing — run: make models"
-    cmd_record "$attendees" "$sharing" "${*:-meeting}"
+# Match on the verb AND the argument count, so a meeting called "index review
+# with priya" records a meeting instead of rebuilding the index.
+case "${1:-}:$#" in
+  watch:1)          cmd_watch; exit $? ;;
+  pending:1)        cmd_pending; exit $? ;;
+  index:1)          cmd_index; exit $? ;;
+  vocab:1)          cmd_vocab; exit $? ;;
+  doctor:1)         cmd_doctor; exit $? ;;
+  redo:2)           cmd_redo "$2" "$attendees"; exit $? ;;
+  approve:2)        cmd_approve "$2"; exit $? ;;
+  play:2)           cmd_play "$2" "00:00"; exit $? ;;
+  play:3)
+    # Only a real timestamp makes this the play command. "qn play testing
+    # session" is a meeting, not a request to replay one.
+    case "$3" in
+      [0-9]*:[0-9][0-9]) cmd_play "$2" "$3"; exit $? ;;
+    esac
     ;;
+  redo:1)           die "usage: qn redo <id>" ;;
+  approve:1)        die "usage: qn approve <id>" ;;
+  play:1)           die "usage: qn play <id> [MM:SS]" ;;
 esac
+
+# Anything that was not a subcommand is a meeting title.
+need whisper-cli "brew install whisper-cpp"
+need claude "install the Claude CLI"
+[ -f "$MODEL" ] || die "the speech model is missing — run: make models"
+cmd_record "$attendees" "$sharing" "${*:-meeting}"

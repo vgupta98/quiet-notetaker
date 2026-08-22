@@ -201,10 +201,21 @@ def load_removed(directory: str) -> set[str]:
 
 
 def merge_with_existing(existing: list[str], harvested: list[str], removed: set[str]) -> list[str]:
-    """Keep what the user has, add what is new, honour what they deleted."""
+    """Keep what the user has, add what is new, honour what they deleted.
+
+    The removal list only ever silences our own suggestions. A word the user
+    typed in themselves always wins, even one they deleted earlier — otherwise
+    the file quietly reverts their edit and the README's "add your own freely"
+    is a lie.
+    """
     out: list[str] = []
     seen: set[str] = set()
-    for term in list(existing) + list(harvested):
+    for term in existing:
+        folded = term.lower()
+        if folded not in seen:
+            seen.add(folded)
+            out.append(term)
+    for term in harvested:
         folded = term.lower()
         if folded in seen or folded in removed:
             continue
@@ -247,7 +258,9 @@ def refresh(directory: str) -> list[str]:
 
     merged = merge_with_existing(before, harvested, removed)
     _write(directory, merged)
-    _remember_suggestions(directory, merged)
+    # Remember only what WE proposed. Recording the merged list turned the
+    # user's own additions into suggestions, so deleting one tombstoned it.
+    _remember_suggestions(directory, harvested)
     return merged
 
 

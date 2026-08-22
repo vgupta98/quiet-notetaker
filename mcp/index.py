@@ -4,9 +4,11 @@
 The index is a cache. Every row comes from a markdown note on disk, so
 `.index.db` can be deleted at any time and rebuilt by a rescan.
 
-Notes with `sharing: local` or `sharing: none` are never indexed. That rule
-lives in `parse_note()`, the only function that reads a note file, so no caller
-can go around it.
+A note is indexed only when its frontmatter positively reads `sharing: full`.
+Everything else — `local`, `none`, a missing key, a malformed block, a value
+nobody planned for — stays out. That rule lives in `is_shareable()`, called by
+`parse_note()`, the only function that reads a note file, so no caller can go
+around it.
 
 Standard library only. Python 3.13.
 """
@@ -24,12 +26,14 @@ from typing import Any
 DEFAULT_NOTES_DIR = "~/Meetings"
 INDEX_FILENAME = ".index.db"
 
-# SPEC.md: `local` keeps the transcript on this machine, `none` should not
-# exist at all. Neither may reach a search result.
-EXCLUDED_SHARING = frozenset({"local", "none"})
+# SPEC.md: `full` is the one value that permits indexing. `local` keeps the
+# transcript on this machine and `none` should not exist at all.
+SHARING_FULL = "full"
 
 # Bumped whenever the tables change, so an old file is rebuilt instead of read.
-SCHEMA_VERSION = 1
+# Version 2 also forces a rescan of every note, because version 1 was written
+# by a parser that indexed a note whose sharing value it could not read.
+SCHEMA_VERSION = 2
 
 SNIPPET_TOKENS = 14
 MAX_TRANSCRIPT_LINES = 2000
@@ -44,6 +48,13 @@ _CHECKBOX = re.compile(r"^[ \t]*[-*][ \t]+\[(?P<mark>[ xX])\][ \t]*(?P<text>.*)$
 _OWNER = re.compile(r"^(?P<owner>[^\s:][^:]{0,38}):[ \t]+(?P<rest>\S.*)$")
 _ID_DATE = re.compile(r"^(?P<day>\d{4}-\d{2}-\d{2})-(?P<hour>\d{2})(?P<minute>\d{2})-")
 _STAMP = re.compile(r"^\[(?P<minutes>\d+):(?P<seconds>\d{2})\]")
+_FRONTMATTER_LINE = re.compile(r"^[ \t]*(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)[ \t]*:(?P<value>.*)$")
+_BODY_SHARING = re.compile(r"^[ \t]*sharing[ \t]*:", re.MULTILINE | re.IGNORECASE)
+
+# The characters that build an FTS5 column filter or group. A query is wrapped
+# in `{column} : (...)`, so a query holding these could close that group and
+# name another column.
+_FTS_STRUCTURE = str.maketrans({character: " " for character in "{}():"})
 
 
 # --------------------------------------------------------------------------
@@ -123,6 +134,70 @@ def _split_items(inner: str) -> list[str]:
 def _unquote(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
         return value[1:-1]
+    return value
+
+
+def is_shareable(text: str) -> bool:
+    """Say whether a note may be indexed. Fail closed on anything unclear.
+
+    Only a frontmatter block that positively reads `sharing: full` opens the
+    index. A missing key, an unknown value, a block that never closes, a block
+    cut short by a `---` inside a value, or no frontmatter at all all mean
+    private, because a private note read wrongly is the one failure this tool
+    must never have.
+
+    This reads the raw text instead of `parse_frontmatter()` on purpose. That
+    parser is forgiving by design, and forgiveness is what leaks a note.
+    """
+    lines = text.lstrip("\ufeff").split("\n")  # a BOM must not hide the block
+    if lines[0].strip() != "---":
+        return False  # no frontmatter block at all
+
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if end is None:
+        return False  # the block never closes
+
+    found: list[str] = []
+    for line in lines[1:end]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = _FRONTMATTER_LINE.match(line)
+        if match is None:
+            return False  # not `key: value`, so this block is not what it seems
+        value = match.group("value").strip()
+        if value.startswith("[") and not value.endswith("]"):
+            # A list cut in half means the `---` above was a stray one inside a
+            # value, e.g. an attendee name that carries a newline. The real end
+            # of the block, and the real `sharing:` line, are further down.
+            return False
+        if match.group("key").lower() == "sharing":
+            found.append(_sharing_value(value))
+
+    if not found:
+        return False  # the note never claimed to be shareable
+    if any(value != SHARING_FULL for value in found):
+        return False  # a duplicate key gives up the safest value, not the last
+    # Last guard: a `sharing:` line in the body says the block ended early.
+    return _BODY_SHARING.search("\n".join(lines[end + 1:])) is None
+
+
+def _sharing_value(raw: str) -> str:
+    """Normalise one `sharing:` value: drop a trailing comment, quotes and case."""
+    return _unquote(_strip_comment(raw).strip()).strip().lower()
+
+
+def _strip_comment(value: str) -> str:
+    """Drop a trailing ` # comment`. A `#` inside quotes belongs to the value."""
+    quote = ""
+    for position, character in enumerate(value):
+        if quote:
+            if character == quote:
+                quote = ""
+        elif character in "\"'":
+            quote = character
+        elif character == "#" and (position == 0 or value[position - 1] in " \t"):
+            return value[:position]
     return value
 
 
@@ -208,15 +283,14 @@ def _split_owner(text: str) -> tuple[str | None, str]:
 
 
 def parse_note(path: str) -> dict[str, Any] | None:
-    """Read one note file. Return None when the sharing rules forbid indexing."""
+    """Read one note file. Return None unless it positively says `sharing: full`."""
     with open(path, encoding="utf-8", errors="replace") as handle:
         text = handle.read()
 
-    fields, body = parse_frontmatter(text)
-    sharing = str(fields.get("sharing", "full")).strip().lower() or "full"
-    if sharing in EXCLUDED_SHARING:
+    if not is_shareable(text):
         return None
 
+    fields, body = parse_frontmatter(text)
     meeting_id = os.path.splitext(os.path.basename(path))[0]
     notes_text, transcript_text = split_note(body)
     sections = split_sections(notes_text)
@@ -225,7 +299,7 @@ def parse_note(path: str) -> dict[str, Any] | None:
         "title": _title_of(fields, notes_text, meeting_id),
         "date": _date_of(fields, meeting_id),
         "attendees": _attendees_of(fields),
-        "sharing": sharing,
+        "sharing": SHARING_FULL,  # is_shareable() let nothing else through
         "notes_text": notes_text,
         "transcript_text": transcript_text,
         "actions": parse_actions(sections),
@@ -344,7 +418,7 @@ def refresh(db_path: str, notes_dir: str, *, rebuild: bool = False) -> dict[str,
     """Bring the index in line with the notes on disk.
 
     Incremental: a note is re-read only when its mtime moved. Notes that
-    vanished, and notes that turned into `sharing: local`, are dropped. A full
+    vanished, and notes that stopped saying `sharing: full`, are dropped. A full
     rebuild produces the same rows, so a suspect index needs no reasoning about
     — pass rebuild=True.
     """
@@ -422,6 +496,17 @@ def _quote_query(query: str) -> str:
     return " OR ".join(f'"{term}"' for term in terms)
 
 
+def _plain_query(query: str) -> str:
+    """Strip the characters that let a query break out of its column filter.
+
+    `{`, `}` and `:` name a column, and `(`, `)` close the group the caller
+    opens. Without them a query can only ever match the column it was aimed
+    at, so `matched_in` stays true. Words, quoted phrases and the AND/OR/NOT
+    operators all survive, so ordinary queries read the same as before.
+    """
+    return query.translate(_FTS_STRUCTURE)
+
+
 def _column_hits(connection: sqlite3.Connection, query: str, field: str) -> list[tuple[str, str, float]]:
     """Run the query against one FTS column. Returns (id, snippet, rank)."""
     column, position = _FTS_COLUMNS[field]
@@ -430,7 +515,8 @@ def _column_hits(connection: sqlite3.Connection, query: str, field: str) -> list
         " AS snip, bm25(meetings_fts) AS rank FROM meetings_fts"
         " WHERE meetings_fts MATCH ? ORDER BY rank"
     )
-    for expression in (f"{{{column}}} : ({query})", f"{{{column}}} : ({_quote_query(query)})"):
+    for text in (_plain_query(query), _quote_query(query)):
+        expression = f"{{{column}}} : ({text})"
         try:
             rows = connection.execute(sql, (expression,)).fetchall()
         except sqlite3.OperationalError:

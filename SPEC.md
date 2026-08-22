@@ -69,7 +69,16 @@ _20 Aug 2026, 15:35_ · _With: Priya, Arjun_
 | `warnings` | list of string | human-readable capture problems |
 
 A note with `sharing: local` has a transcript and **no** AI sections.
-Anything with `sharing: local` is **excluded from the index entirely**.
+
+**Sharing fails closed, everywhere.** A note is indexed only when its
+frontmatter positively reads `sharing: full`. Missing, malformed, unknown,
+commented, duplicated, or unterminated — all mean private. The same rule
+applies to the `consent` file: anything not exactly `full`, `local`, or
+`none` is read as `local`.
+
+Frontmatter scalars and list items are always double-quoted, and control
+characters are stripped from them. A newline in a title would otherwise close
+the block early and drop `sharing:` into the body.
 
 ## Transcript line format
 
@@ -83,15 +92,19 @@ Minutes may exceed 59 (`[104:12]`). Speaker is exactly `Me` or `Them`.
 ## CLI surface
 
 ```
-qn [--with "A, B"] [title...]   record until Ctrl-C, then process
+qn [--with "A, B"] [--local] [title...]   record until Ctrl-C, then process
 qn redo <id|dir>                rebuild notes from an existing recording
 qn play <id> [MM:SS]            play the audio from a timestamp
 qn approve <id>                 send a held (local) meeting to Claude
 qn pending                      list meetings awaiting approval
 qn watch                        auto-record detected meetings
 qn index                        rebuild ~/Meetings/.index.db
+qn vocab                        rebuild and show the learned vocabulary
 qn doctor                       check dependencies and permissions
 ```
+
+A subcommand is recognised only when the argument count matches it, so a
+meeting called "index review with priya" records rather than reindexing.
 
 `QN_NOTES_DIR` overrides `~/Meetings` everywhere, including the MCP server.
 
@@ -134,6 +147,7 @@ Returns the notes only. Never the transcript.
 
 - Python: `unittest`, stdlib only. No pytest, no third-party imports anywhere.
 - Shell: `test/run.sh`, plain bash asserts.
-- Swift: a `--self-test` flag that exercises pure logic with no hardware.
+- Swift: both binaries take `--self-test`, exercising pure logic with no
+  hardware, printing one line per case and exiting non-zero on any failure.
 - Fixtures are generated, never committed as binaries.
 - `make test` runs everything and exits non-zero on any failure.
