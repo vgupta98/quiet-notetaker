@@ -18,8 +18,8 @@ REC_DIR="$NOTES_DIR/.recordings"
 MODEL="${QN_MODEL:-$HERE/models/ggml-small.en.bin}"
 VAD_MODEL="${QN_VAD_MODEL:-$HERE/models/ggml-silero-v5.1.2.bin}"
 LANG_CODE="${QN_LANG:-en}"
-RECORDER="$HERE/build/recorder"
-WATCHER="$HERE/build/watcher"
+RECORDER="${QN_RECORDER:-$HERE/build/recorder}"
+WATCHER="${QN_WATCHER:-$HERE/build/watcher}"
 PROMPT="$HERE/prompt.md"
 PLAY_WINDOW="${QN_PLAY_WINDOW:-60}"
 
@@ -77,6 +77,12 @@ when_from_id() {
 # can arrive at any point before the transcript would be sent.
 ask_consent() {
   local work="$1" title="$2"
+  # QN_CONSENT answers for you, every time. Useful when you have already
+  # decided your policy, and the only way to test this path without a human.
+  if [ -n "${QN_CONSENT:-}" ]; then
+    printf '%s\n' "$QN_CONSENT" > "$work/consent"
+    return 0
+  fi
   (
     answer="$(osascript 2>/dev/null <<OSA || true
 display dialog "Recording: $title
@@ -256,6 +262,10 @@ cmd_record() {
   if [ -z "$slug" ]; then slug="meeting"; fi
   id="$(date '+%Y-%m-%d-%H%M')-$slug"
   work="$REC_DIR/$id"
+  if [ -n "${QN_DRY_RUN:-}" ]; then
+    printf 'id=%s\n' "$id"
+    return 0
+  fi
   mkdir -p "$work"
   if [ -n "$people" ]; then printf '%s\n' "$people" > "$work/attendees.txt"; fi
   printf '%s\n' "$sharing" > "$work/consent"
@@ -274,7 +284,7 @@ cmd_watch() {
   rm -f "$lock"
   step "watching for meetings — ctrl-c to stop"
 
-  "$WATCHER" --ignore-while "$lock" | while IFS= read -r line; do
+  "$WATCHER" --ignore-while "$lock" | while IFS= read -r line; do  # noqa: seam
     local verb rest title people work id
     verb="${line%%	*}"
     rest="${line#*	}"
@@ -299,8 +309,10 @@ cmd_watch() {
         printf '%s' "$!" > "$lock.pid"
         ;;
       STOP)
+        # SIGTERM, not SIGINT: a background job in a non-interactive shell
+        # starts with SIGINT ignored, and an ignored signal cannot be trapped.
         if [ -s "$lock.pid" ]; then
-          kill -INT "$(cat "$lock.pid")" 2>/dev/null || true
+          kill -TERM "$(cat "$lock.pid")" 2>/dev/null || true
           wait "$(cat "$lock.pid")" 2>/dev/null || true
         fi
         if [ -s "$lock" ]; then
