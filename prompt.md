@@ -7,7 +7,8 @@ In the transcript, "Me" is the person these notes belong to. "Them" is everyone 
 - It comes from speech-to-text. It mishears names, product names, and technical terms. Correct a word when the context makes the right one obvious. Leave it alone when it does not.
 - "Me" comes from the microphone, which keeps recording even when the meeting app is muted. So a "Me" line can be a private aside that nobody else heard. Never turn an unclear "Me" line into a commitment.
 - Speech has no punctuation. A run-on line is one thought, not several.
-- If a list of people appears above the transcript, use those names in the notes. Work out who is speaking from how people address each other. Never use a name that is not on that list, and write "Them" when you cannot tell.
+- A list of people may appear above the transcript. Each line is one attendee, and anything after the dash is what the owner of these notes wrote about that person. Use it to work out who is speaking, together with how people address each other.
+- Never use a name that is not on that list. Write "Them" when you cannot tell. A wrong name is worse than no name.
 
 ## What to write
 

@@ -10,6 +10,7 @@
 #   qn play <id> [MM:SS]                      hear what was actually said
 #   qn index                                  rebuild the search index
 #   qn vocab                                  show the words it has learned
+#   qn people                                 show who you meet, and add notes
 #   qn doctor                                 check the setup
 set -euo pipefail
 
@@ -275,12 +276,21 @@ for w in json.load(sys.stdin)["warnings"]:
     people="$(cat "$work/attendees.txt")"
   fi
 
+  # The roster adds what you wrote about these people — "my manager", "owns
+  # billing" — which is what lets Claude turn a "Them" line into a name.
+  local who="$people"
+  if [ -n "$people" ]; then
+    local enriched
+    enriched="$(python3 "$HERE/people.py" "$NOTES_DIR" --context "$people" 2>/dev/null || true)"
+    if [ -n "$enriched" ]; then who="$enriched"; fi
+  fi
+
   if [ "$sharing" = "full" ]; then
     step "writing notes"
     if ! {
           cat "$PROMPT"
-          if [ -n "$people" ]; then
-            printf '\n\n----- PEOPLE IN THIS MEETING -----\n\n%s\n' "$people"
+          if [ -n "$who" ]; then
+            printf '\n\n----- PEOPLE IN THIS MEETING -----\n\n%s\n' "$who"
           fi
           printf '\n\n----- TRANSCRIPT -----\n\n'
           cat "$work/transcript.txt"
@@ -304,6 +314,7 @@ refresh_index_quietly() {
   fi
   # Learning happens after the notes exist, never from the raw transcript.
   python3 "$HERE/vocab.py" "$NOTES_DIR" >/dev/null 2>&1 || true
+  python3 "$HERE/people.py" "$NOTES_DIR" >/dev/null 2>&1 || true
 }
 
 # ----------------------------------------------------------------- commands
@@ -481,6 +492,13 @@ cmd_play() {
   rm -rf "$clipdir"
 }
 
+cmd_people() {
+  python3 "$HERE/people.py" "$NOTES_DIR" >/dev/null
+  printf '\n'
+  sed -e '/^#/d' -e '/^[[:space:]]*$/d' -e 's/^/  /' "$NOTES_DIR/people.md" 2>/dev/null || true
+  printf '\n  edit %s to say who these people are — Claude reads it\n\n' "$NOTES_DIR/people.md"
+}
+
 cmd_vocab() {
   python3 "$HERE/vocab.py" "$NOTES_DIR"
   printf '\n'
@@ -538,6 +556,7 @@ case "${1:-}:$#" in
   pending:1)        cmd_pending; exit $? ;;
   index:1)          cmd_index; exit $? ;;
   vocab:1)          cmd_vocab; exit $? ;;
+  people:1)         cmd_people; exit $? ;;
   doctor:1)         cmd_doctor; exit $? ;;
   redo:2)           cmd_redo "$2" "$attendees"; exit $? ;;
   approve:2)        cmd_approve "$2"; exit $? ;;

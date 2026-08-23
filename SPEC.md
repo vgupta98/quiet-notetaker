@@ -100,11 +100,36 @@ qn pending                      list meetings awaiting approval
 qn watch                        auto-record detected meetings
 qn index                        rebuild ~/Meetings/.index.db
 qn vocab                        rebuild and show the learned vocabulary
+qn people                       rebuild and show the roster of who you meet
 qn doctor                       check dependencies and permissions
 ```
 
 A subcommand is recognised only when the argument count matches it, so a
 meeting called "index review with priya" records rather than reindexing.
+
+## The roster
+
+`~/Meetings/people.md` names the people you meet. One person per line:
+
+```
+- **Priya Sharma** (4 meetings, last 2026-08-22) — my manager, owns billing
+```
+
+The bracket is generated and gets rewritten after every recording. The text
+after the dash is the user's and is never overwritten. `qn` sends the entries
+matching this meeting's attendees to Claude with the transcript.
+
+Two rules hold:
+
+  Only `sharing: full` notes contribute a name, because the roster is fed back
+  to Claude. A held meeting keeps its attendees to itself.
+
+  Every attendee reaches the prompt, whether the roster knows them or not.
+  `prompt.md` forbids a name that is not on that list, so an incomplete list
+  would silently suppress a real name.
+
+A deleted person is recorded in `.people-removed` and never re-added. A person
+typed in by hand always survives, even one deleted before.
 
 `QN_NOTES_DIR` overrides `~/Meetings` everywhere, including the MCP server.
 

@@ -121,6 +121,36 @@ Claude put it there, so it can.
 
 Private meetings contribute nothing.
 
+## Who said what
+
+The transcript labels two speakers: `Me` from your microphone, and `Them` from
+everything the call played back. `Them` is a mixdown of every other voice, so
+no audio work can split it into people. The names come from context instead.
+
+Claude does that better when it knows who these people are. So the tool keeps a
+roster:
+
+```sh
+./qn people     # show who you meet
+```
+
+`~/Meetings/people.md` holds one person per line:
+
+```
+- **Priya Sharma** (4 meetings, last 2026-08-22) — my manager, owns billing
+```
+
+**The bracket is ours. Everything after the dash is yours.** Write who someone
+is, and that text goes to Claude whenever that person is in a meeting. It is
+what turns a `Them` line into a name.
+
+- Only the attendees of *this* meeting are sent. Nobody else is named.
+- Only `sharing: full` meetings add a name, because the roster goes back to Claude.
+- Delete a line and that person never comes back. Add your own freely.
+
+Names are never guessed from audio. They come from `--with` or from your
+calendar, so a person typed them.
+
 ## How it works
 
 Your Mac records two tracks: everything the meeting app plays (`them.m4a`) and
@@ -154,6 +184,7 @@ mishearings in the notes above it, so a wrong correction is always checkable.
 | `health.py` | Decides whether a recording is usable |
 | `merge.py` | Interleaves the two transcripts by timestamp |
 | `vocab.py` | Learns your meetings' words and primes whisper with them |
+| `people.py` | Keeps the roster of who you meet, and what you wrote about them |
 | `prompt.md` | The note template. Edit this to change the notes |
 | `mcp/` | The search index and the MCP server |
 

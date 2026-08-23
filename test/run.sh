@@ -264,7 +264,7 @@ qn_has() {
 
 # SPEC.md, "CLI surface". Every one of these must exist. A rename is a broken
 # contract, so it fails here instead of quietly skipping the tests below.
-for sub in redo play index pending approve vocab doctor; do
+for sub in redo play index pending approve vocab people doctor; do
   if qn_has "$sub"; then
     pass "qn has the $sub subcommand"
   else
@@ -280,7 +280,8 @@ mkdir -p "$STUB"
 cat > "$STUB/claude" <<'STUBEOF'
 #!/bin/bash
 if [ -n "${QN_CLAUDE_LOG:-}" ]; then printf 'claude called\n' >> "$QN_CLAUDE_LOG"; fi
-cat >/dev/null
+# QN_CLAUDE_INPUT keeps the prompt, so a test can prove what was sent.
+if [ -n "${QN_CLAUDE_INPUT:-}" ]; then cat > "$QN_CLAUDE_INPUT"; else cat >/dev/null; fi
 cat <<'BODY'
 ## Summary
 - A stubbed summary line.
@@ -384,6 +385,49 @@ if qn_has pending; then
   assert_missing "$(cat "$TMPROOT/pending.out")" "$FULL_ID" "qn pending leaves out a meeting whose consent says full"
 else
   fail "qn pending" "no pending subcommand in qn"
+fi
+
+# 6. qn people builds the roster, and what you write in it reaches Claude.
+if qn_has people; then
+  capture 60 "$TMPROOT/people.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+    /bin/bash "$QN" people
+  assert_eq "0" "$CAPTURE_CODE" "qn people exits 0"
+  assert_file "$QN_NOTES_DIR/people.md" "qn people writes the roster"
+  assert_contains "$(cat "$QN_NOTES_DIR/people.md")" "Priya" "the roster lists an attendee"
+
+  # Write a note against Priya, the way a user would, then re-run the meeting
+  # she attended. The prompt must carry what was written.
+  python3 - "$QN_NOTES_DIR/people.md" <<'PYEOF'
+import sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+out = []
+for line in text.splitlines(True):
+    if line.startswith("- **Priya**"):
+        line = line.rstrip("\n") + " \u2014 my manager, owns billing\n"
+    out.append(line)
+open(path, "w", encoding="utf-8").write("".join(out))
+PYEOF
+  assert_contains "$(cat "$QN_NOTES_DIR/people.md")" "my manager" "the roster keeps what you wrote"
+
+  PROMPT_FILE="$TMPROOT/claude-prompt.txt"
+  rm -f "$PROMPT_FILE"
+  capture 60 "$TMPROOT/people-redo.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+    QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
+    QN_CLAUDE_INPUT="$PROMPT_FILE" \
+    /bin/bash "$QN" redo "$QN_NOTES_DIR/.recordings/$FULL_ID"
+  assert_eq "0" "$CAPTURE_CODE" "qn redo exits 0 with a roster in place"
+  assert_file "$PROMPT_FILE" "the prompt reached the claude stub"
+  assert_contains "$(cat "$PROMPT_FILE")" "PEOPLE IN THIS MEETING" "the prompt has the people block"
+  assert_contains "$(cat "$PROMPT_FILE")" "my manager, owns billing" "what you wrote about Priya reaches Claude"
+  assert_contains "$(cat "$PROMPT_FILE")" "Arjun" "an attendee with no roster note is still listed"
+
+  # The roster must survive its own refresh. A note you wrote is not a fixture.
+  capture 60 "$TMPROOT/people2.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+    /bin/bash "$QN" people
+  assert_contains "$(cat "$QN_NOTES_DIR/people.md")" "my manager" "your note survives the next refresh"
+else
+  fail "qn people" "no people subcommand in qn"
 fi
 
 # --------------------------------------------------------------------------
