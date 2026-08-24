@@ -149,6 +149,12 @@ A pruned recording gets a `.pruned` marker. `qn redo` reads it and says the
 audio is gone, instead of failing inside whisper. `QN_DRY_RUN=1` reports what
 it would delete and deletes nothing.
 
+`auto_prune = yes` runs the same code after a recording, at most once a day.
+`.recordings/.last-prune` holds the date of the last automatic run, and is
+written before the prune, so a recurring error cannot cause a scan after every
+meeting. An automatic run prints what it deleted and stays silent when it
+deleted nothing.
+
 An MCP reply is capped at `index.MAX_LIMIT` rows whatever the caller asks for,
 and every capped reply reports the real `total` beside `shown`.
 
@@ -162,6 +168,7 @@ the developer's own.
 |---|---|---|
 | `notes` | `QN_NOTES_DIR` | `~/Meetings` |
 | `prune_days` | `QN_PRUNE_DAYS` | `30` |
+| `auto_prune` | `QN_AUTO_PRUNE` | `no` |
 | `language` | `QN_LANG` | `en` |
 | `play_window` | `QN_PLAY_WINDOW` | `60` |
 

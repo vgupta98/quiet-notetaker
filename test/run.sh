@@ -503,6 +503,89 @@ else
 fi
 
 # --------------------------------------------------------------------------
+section "auto_prune"
+# --------------------------------------------------------------------------
+# Housekeeping after a recording, on the same code path as `qn prune`, at most
+# once a day. Off unless the settings file asks for it.
+guard_notes_dir
+
+# An old recording that nothing is going to touch directly.
+ANCIENT="$QN_NOTES_DIR/.recordings/2020-01-01-1000-ancient"
+make_ancient() {
+  rm -rf "$ANCIENT"
+  mkdir -p "$ANCIENT"
+  printf 'full\n' > "$ANCIENT/consent"
+  printf 'audio' > "$ANCIENT/them.m4a"
+  printf 'audio' > "$ANCIENT/me.m4a"
+  touch -t 202001010000 "$ANCIENT/them.m4a" "$ANCIENT/me.m4a"
+  rm -f "$QN_NOTES_DIR/.recordings/.last-prune"
+}
+
+redo_one() { # redo_one <config-file> <outfile>
+  capture 60 "$2" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" QN_CONFIG="$1" \
+    QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
+    /bin/bash "$QN" redo "$QN_NOTES_DIR/.recordings/$FULL_ID"
+}
+
+printf 'auto_prune = no\n' > "$TMPROOT/auto-off"
+printf 'auto_prune = yes\nprune_days = 30\n' > "$TMPROOT/auto-on"
+
+# Off by default: nobody's audio disappears because they pulled a new version.
+make_ancient
+redo_one "$TMPROOT/auto-off" "$TMPROOT/auto-off.out"
+assert_eq "0" "$CAPTURE_CODE" "a recording still works with auto_prune off"
+assert_file "$ANCIENT/them.m4a" "auto_prune off leaves old audio alone"
+
+# On: the old recording loses its audio, and keeps everything else.
+make_ancient
+redo_one "$TMPROOT/auto-on" "$TMPROOT/auto-on.out"
+assert_eq "0" "$CAPTURE_CODE" "a recording still works with auto_prune on"
+if [ -f "$ANCIENT/them.m4a" ]; then
+  fail "auto_prune on deletes old audio" "them.m4a is still there"
+else
+  pass "auto_prune on deletes old audio"
+fi
+assert_file "$ANCIENT/consent" "auto_prune keeps everything that is not audio"
+assert_file "$ANCIENT/.pruned" "auto_prune leaves the marker qn redo reads"
+assert_contains "$(cat "$TMPROOT/auto-on.out")" "2020-01-01-1000-ancient" "an automatic prune names what it deleted"
+assert_file "$QN_NOTES_DIR/$FULL_ID.md" "the note is still written when auto_prune runs"
+
+# Once a day. The stamp is already today's, so a second recording must not scan.
+make_ancient
+printf '%s\n' "$(date '+%Y-%m-%d')" > "$QN_NOTES_DIR/.recordings/.last-prune"
+redo_one "$TMPROOT/auto-on" "$TMPROOT/auto-twice.out"
+assert_file "$ANCIENT/them.m4a" "auto_prune runs at most once a day"
+
+# A stamp from another day must let it run again.
+printf '2019-01-01\n' > "$QN_NOTES_DIR/.recordings/.last-prune"
+redo_one "$TMPROOT/auto-on" "$TMPROOT/auto-yesterday.out"
+if [ -f "$ANCIENT/them.m4a" ]; then
+  fail "auto_prune runs again the next day" "them.m4a is still there"
+else
+  pass "auto_prune runs again the next day"
+fi
+assert_eq "$(date '+%Y-%m-%d')" "$(cat "$QN_NOTES_DIR/.recordings/.last-prune")" "auto_prune stamps the day it ran"
+
+# A meeting awaiting approval is protected by the same code `qn prune` uses.
+make_ancient
+printf 'local\n' > "$ANCIENT/consent"
+rm -f "$ANCIENT/.pruned"
+redo_one "$TMPROOT/auto-on" "$TMPROOT/auto-held.out"
+assert_file "$ANCIENT/them.m4a" "auto_prune never touches a meeting awaiting approval"
+rm -rf "$ANCIENT"
+
+# A value that is neither yes nor no must fail, naming the setting.
+printf 'auto_prune = maybe\n' > "$TMPROOT/auto-bad"
+capture 20 "$TMPROOT/auto-bad.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+  QN_CONFIG="$TMPROOT/auto-bad" /bin/bash "$QN" pending
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "a bad auto_prune is rejected" "it exited 0"
+else
+  pass "a bad auto_prune is rejected"
+fi
+assert_contains "$(cat "$TMPROOT/auto-bad.out")" "auto_prune" "the failure names the bad setting"
+
+# --------------------------------------------------------------------------
 section "installed on the PATH, and the settings file"
 # --------------------------------------------------------------------------
 # `make install` symlinks qn into a bin directory. BASH_SOURCE names the

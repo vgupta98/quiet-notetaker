@@ -209,10 +209,21 @@ Audio is the only thing that really grows — about 70 MB per hour, two tracks a
 transcripts fit in under a gigabyte.**
 
 ```sh
-./qn prune                          # delete audio older than 30 days
-./qn --older-than 7d prune          # be stricter
-QN_DRY_RUN=1 ./qn prune             # see what it would delete
+qn prune                          # delete audio older than 30 days
+qn --older-than 7d prune          # be stricter
+QN_DRY_RUN=1 qn prune             # see what it would delete
 ```
+
+To stop thinking about it, turn on housekeeping in your settings file:
+
+```
+auto_prune = yes
+prune_days = 30
+```
+
+It then runs itself after a recording, **at most once a day**, using the same
+code as `qn prune` — so the same meetings are protected. It says what it
+deleted and stays quiet when there is nothing to do. It is off until you ask.
 
 It deletes the two `.m4a` files and nothing else. You keep the notes, the
 transcript, and the record of what you consented to. The only thing you lose is
@@ -234,6 +245,7 @@ line. Create it when you want to change something:
 # where your meetings are kept
 notes = ~/Documents/notes/meetings
 
+auto_prune  = yes
 prune_days  = 14
 language    = en
 play_window = 60
@@ -258,6 +270,7 @@ runs and for scripts:
 |---|---|---|
 | `QN_NOTES_DIR` | `notes` | `~/Meetings` |
 | `QN_PRUNE_DAYS` | `prune_days` | `30` |
+| `QN_AUTO_PRUNE` | `auto_prune` | `no` |
 | `QN_LANG` | `language` | `en` |
 | `QN_PLAY_WINDOW` | `play_window` | `60` |
 | `QN_MODEL` | — | `models/ggml-small.en.bin` |
