@@ -33,6 +33,8 @@ sys.path.insert(
 
 import index  # noqa: E402  (path set above)
 
+import names
+
 VOCAB_FILE = "vocabulary.txt"
 REMOVED_FILE = ".vocabulary-removed"
 
@@ -166,7 +168,10 @@ def harvest(notes: list[dict]) -> list[str]:
 
     for note in notes:
         for person in note.get("attendees", []):
-            for word in WORD.findall(person):
+            # An address gives up its local part and its company, never its
+            # top-level domain. "com" primes the decoder for nothing and costs
+            # one of the slots a real term needs.
+            for word in WORD.findall(names.vocabulary_source(person)):
                 if len(word) >= 3:
                     trusted.setdefault(word.lower(), word)
 

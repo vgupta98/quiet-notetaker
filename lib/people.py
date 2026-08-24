@@ -38,6 +38,8 @@ sys.path.insert(
 
 import index  # noqa: E402  (path set above)
 
+import names
+
 PEOPLE_FILE = "people.md"
 REMOVED_FILE = ".people-removed"
 SUGGESTED_FILE = ".people-suggested"
@@ -109,8 +111,13 @@ class Person:
 # --------------------------------------------------------------------------
 
 def clean_name(raw: str) -> str:
-    """A name that cannot break the roster line or the prompt block."""
-    flat = UNSAFE.sub(" ", raw).strip().strip("-").strip()
+    """A name that cannot break the roster line or the prompt block.
+
+    A calendar invite often gives an address rather than a name, so
+    `aisha@example.com` becomes `Aisha` here. Claude cannot match a
+    raw address to what people call each other out loud.
+    """
+    flat = UNSAFE.sub(" ", names.display_name(raw)).strip().strip("-").strip()
     return " ".join(flat.split())
 
 
