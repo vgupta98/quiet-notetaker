@@ -89,6 +89,13 @@ case "$AUTO_PRUNE" in
   *) printf 'qn: auto_prune must be yes or no, got %s\n' "$AUTO_PRUNE" >&2; exit 1 ;;
 esac
 
+# `qn watch` runs for hours. Bash reads a script incrementally, by byte offset,
+# so editing this file under a running watch can make it resume at the old
+# offset in the new bytes. Even the mild case — old functions in memory,
+# new layout on disk — breaks processing after a meeting. So a watch notices
+# when its own file changed, and hands the meeting back instead of failing.
+script_fingerprint() { stat -f '%m %z' "$SELF" 2>/dev/null || printf 'unknown'; }
+
 die()  { printf 'qn: %s\n' "$1" >&2; exit 1; }
 step() { printf '\033[2m  %s\033[0m\n' "$1" >&2; }
 warn() { printf '\033[33m  %s\033[0m\n' "$1" >&2; }
@@ -313,6 +320,13 @@ process_recording() {
     return 0
   fi
 
+  local helper
+  for helper in lib/health.py lib/merge.py lib/vocab.py lib/people.py; do
+    if [ ! -f "$HERE/$helper" ]; then
+      die "$HERE/$helper is missing — the audio is safe in $work"
+    fi
+  done
+
   local report capture warnings
   report="$(python3 "$HERE/lib/health.py" "$work")"
   capture="$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["capture"])')"
@@ -451,6 +465,8 @@ cmd_watch() {
   fi
   rm -f "$lock" "$lock.pid"
   trap watch_cleanup INT TERM EXIT
+  local started_as
+  started_as="$(script_fingerprint)"
   step "watching for meetings — ctrl-c to stop"
 
   "$WATCHER" --ignore-while "$lock" | while IFS= read -r line; do  # noqa: seam
@@ -496,6 +512,13 @@ cmd_watch() {
           if [ "$(read_consent "$work")" = "none" ]; then
             rm -rf "$work"
             warn "discarded at your request"
+          elif [ "$(script_fingerprint)" != "$started_as" ]; then
+            # The audio is already on disk and finalised. Only the processing
+            # would run half-old code, so stop short of it and say so.
+            loud "qn changed on disk while this watch was running"
+            warn "your recording is safe, but this watch is running the old version"
+            warn "finish this meeting with:  qn redo $(basename "$work")"
+            warn "then stop this watch (ctrl-c) and start it again"
           else
             people=""
             if [ -s "$work/attendees.txt" ]; then people="$(cat "$work/attendees.txt")"; fi

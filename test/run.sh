@@ -495,6 +495,80 @@ else
 fi
 
 # --------------------------------------------------------------------------
+section "a watch whose script changed under it"
+# --------------------------------------------------------------------------
+# `qn watch` runs for hours. Bash reads a script by byte offset, so editing it
+# mid-run is a real hazard. Even the mild case leaves old functions in memory
+# pointing at paths that moved. The watch must hand the meeting back rather
+# than fail inside a helper, because the audio is already safe by then.
+guard_notes_dir
+
+STALE_QN="$TMPROOT/stale-qn"
+cp "$QN" "$STALE_QN"
+STALE_NOTES="$TMPROOT/stale-notes"
+mkdir -p "$STALE_NOTES/.recordings"
+
+# A watcher stub that starts a meeting, then stops it, then ends.
+STALE_WATCHER="$TMPROOT/stale-watcher"
+cat > "$STALE_WATCHER" <<'STUBEOF'
+#!/bin/bash
+printf 'START\tapp=zoom.us\twindow=Zoom Meeting\ttitle=changed under me\tattendees=\n'
+# Long enough for the edit below to land before the meeting ends.
+sleep 5
+printf 'STOP\n'
+sleep 1
+STUBEOF
+chmod +x "$STALE_WATCHER"
+
+# A recorder stub that writes both tracks and exits, like the real one.
+STALE_RECORDER="$TMPROOT/stale-recorder"
+cat > "$STALE_RECORDER" <<'STUBEOF'
+#!/bin/bash
+printf 'audio' > "$1/them.m4a"
+printf 'audio' > "$1/me.m4a"
+STUBEOF
+chmod +x "$STALE_RECORDER"
+
+# Touch the copy into the future while the watch runs, which is what an edit
+# looks like from the inside.
+( sleep 2; touch -t 203001010000 "$STALE_QN" ) >/dev/null 2>&1 &
+TOUCHER=$!
+capture 30 "$TMPROOT/stale.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$STALE_NOTES" \
+  QN_CONSENT=full QN_WATCHER="$STALE_WATCHER" QN_RECORDER="$STALE_RECORDER" \
+  QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
+  /bin/bash "$STALE_QN" watch
+wait "$TOUCHER" 2>/dev/null || true
+
+stale_out="$(cat "$TMPROOT/stale.out")"
+assert_contains "$stale_out" "changed on disk" "a watch notices its own script changed"
+assert_contains "$stale_out" "qn redo" "it names the command that finishes the meeting"
+assert_contains "$stale_out" "recording is safe" "it says the recording is safe"
+
+stale_work="$(find "$STALE_NOTES/.recordings" -name 'them.m4a' -print -quit 2>/dev/null)"
+assert_file "$stale_work" "the audio survives a script that changed mid-watch"
+
+# A helper that is genuinely gone must name itself, not fail inside python.
+HELPER_WORK="$STALE_NOTES/.recordings/2026-01-01-1000-no-helper"
+mkdir -p "$HELPER_WORK"
+printf 'full\n' > "$HELPER_WORK/consent"
+printf 'audio' > "$HELPER_WORK/them.m4a"
+printf 'audio' > "$HELPER_WORK/me.m4a"
+BARE="$TMPROOT/bare"
+mkdir -p "$BARE/lib"
+cp "$QN" "$BARE/qn"
+cp "$ROOT/prompt.md" "$BARE/prompt.md"
+capture 20 "$TMPROOT/no-helper.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$STALE_NOTES" \
+  QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
+  /bin/bash "$BARE/qn" redo "2026-01-01-1000-no-helper"
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "a missing helper is reported" "it exited 0"
+else
+  pass "a missing helper is reported"
+fi
+assert_contains "$(cat "$TMPROOT/no-helper.out")" "health.py is missing" "the failure names the missing helper"
+assert_contains "$(cat "$TMPROOT/no-helper.out")" "the audio is safe" "the failure says the audio is safe"
+
+# --------------------------------------------------------------------------
 section "auto_prune"
 # --------------------------------------------------------------------------
 # Housekeeping after a recording, on the same code path as `qn prune`, at most
