@@ -589,7 +589,13 @@ ln -sf "$QN" "$FAKEBIN/qn"
 
 capture 30 "$TMPROOT/linked.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
   /bin/bash "$FAKEBIN/qn" doctor
-assert_contains "$(cat "$TMPROOT/linked.out")" "$ROOT" "a symlinked qn still finds its own repo"
+# Assert the check itself passed, not merely that the repo path was printed.
+# The path appears in the `code:` line either way, so a broken check looked
+# fine here while `qn doctor` was reporting a failure to the user.
+assert_contains "$(cat "$TMPROOT/linked.out")" "qn resolves to its repo" \
+  "a symlinked qn reports on its own repo"
+assert_missing "$(cat "$TMPROOT/linked.out")" "is not a quiet-notetaker checkout" \
+  "a symlinked qn resolves to a real checkout"
 assert_missing "$(cat "$TMPROOT/linked.out")" "$FAKEBIN/models" "a symlinked qn does not look inside the bin directory"
 
 # A symlink to a symlink, which is what a second `make install` can leave.

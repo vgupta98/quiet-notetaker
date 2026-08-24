@@ -682,7 +682,7 @@ cmd_doctor() {
 
   # A `qn` on your PATH that points at a moved or deleted repo gives confusing
   # errors everywhere else. Name the problem here instead.
-  check "qn resolves to its repo" "[ -f '$HERE/prompt.md' ] && [ -f '$HERE/health.py' ]" \
+  check "qn resolves to its repo" "[ -f '$HERE/prompt.md' ] && [ -f '$HERE/lib/health.py' ]" \
         "this qn points at $HERE, which is not a quiet-notetaker checkout"
 
   printf '\n  notes:    %s\n' "$NOTES_DIR"
