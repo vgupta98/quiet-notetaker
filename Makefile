@@ -5,7 +5,11 @@ VAD_URL    ?= https://huggingface.co/ggml-org/whisper-vad/resolve/main/$(VAD_NAM
 
 SWIFTC = swiftc -O -swift-version 5 -target arm64-apple-macos15.0
 
-.PHONY: all build models test clean
+# Where `qn` goes on your PATH. This is where the claude CLI installs itself,
+# and it needs no sudo.
+BIN ?= $(HOME)/.local/bin
+
+.PHONY: all build models test clean install uninstall
 
 all: build models
 
@@ -40,6 +44,36 @@ models/$(VAD_NAME):
 
 test:
 	@test/run.sh
+
+# One command: build the binaries, fetch the models, put `qn` on your PATH.
+# The symlink points back at this checkout, so `git pull` upgrades you and
+# there is never a second copy of the code to debug.
+install: all
+	@mkdir -p "$(BIN)"
+	@ln -sf "$(CURDIR)/qn" "$(BIN)/qn"
+	@echo ""
+	@echo "  linked $(BIN)/qn -> $(CURDIR)/qn"
+	@case ":$$PATH:" in \
+	  *":$(BIN):"*) ;; \
+	  *) echo ""; \
+	     echo "  warning: $(BIN) is not on your PATH."; \
+	     echo "  add this to ~/.zshrc:  export PATH=\"$(BIN):\$$PATH\"" ;; \
+	esac
+	@echo ""
+	@"$(BIN)/qn" doctor || true
+	@echo "  to let Claude search your meetings, run:"
+	@echo ""
+	@echo "    claude mcp add quiet-notetaker -- python3 $(CURDIR)/mcp/server.py"
+	@echo ""
+
+# Removes the command and nothing else. Your meetings are never touched.
+uninstall:
+	@rm -f "$(BIN)/qn"
+	@echo "  removed $(BIN)/qn"
+	@echo "  your notes are untouched. to disconnect Claude, run:"
+	@echo ""
+	@echo "    claude mcp remove quiet-notetaker"
+	@echo ""
 
 clean:
 	rm -rf build

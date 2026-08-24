@@ -16,6 +16,10 @@ QN="$ROOT/qn"
 # Keep the run from dropping __pycache__ directories into the repo.
 export PYTHONDONTWRITEBYTECODE=1
 
+# No test may read the developer's own settings file. A path that cannot
+# exist makes every config lookup fall through to the built-in default.
+export QN_CONFIG="/nonexistent/quiet-notetaker/config"
+
 # --------------------------------------------------------------------------
 # assert harness
 # --------------------------------------------------------------------------
@@ -497,6 +501,69 @@ if qn_has prune; then
 else
   fail "qn prune" "no prune subcommand in qn"
 fi
+
+# --------------------------------------------------------------------------
+section "installed on the PATH, and the settings file"
+# --------------------------------------------------------------------------
+# `make install` symlinks qn into a bin directory. BASH_SOURCE names the
+# symlink, not its target, so a qn that does not resolve it looks for its own
+# models and helpers inside that bin directory and fails everywhere.
+FAKEBIN="$TMPROOT/fakebin"
+mkdir -p "$FAKEBIN"
+ln -sf "$QN" "$FAKEBIN/qn"
+
+capture 30 "$TMPROOT/linked.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+  /bin/bash "$FAKEBIN/qn" doctor
+assert_contains "$(cat "$TMPROOT/linked.out")" "$ROOT" "a symlinked qn still finds its own repo"
+assert_missing "$(cat "$TMPROOT/linked.out")" "$FAKEBIN/models" "a symlinked qn does not look inside the bin directory"
+
+# A symlink to a symlink, which is what a second `make install` can leave.
+ln -sf "$FAKEBIN/qn" "$FAKEBIN/qn2"
+capture 30 "$TMPROOT/linked2.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+  /bin/bash "$FAKEBIN/qn2" doctor
+assert_contains "$(cat "$TMPROOT/linked2.out")" "$ROOT" "a chain of symlinks still resolves"
+
+# The settings file. The MCP server never sees your shell, so this file is the
+# only way a moved notes folder reaches Claude.
+CONF_DIR="$TMPROOT/conf"
+CONF="$CONF_DIR/config"
+CONF_NOTES="$TMPROOT/conf-notes"
+mkdir -p "$CONF_DIR" "$CONF_NOTES"
+printf '# my settings\nnotes = %s\nprune_days = 7\nlanguage = fr\n' "$CONF_NOTES" > "$CONF"
+
+# -u QN_NOTES_DIR matters: this suite exports it, and the environment is meant
+# to beat the file. Without unsetting it this would test the wrong thing.
+capture 30 "$TMPROOT/conf.out" env -u QN_NOTES_DIR PATH="$STUB:$PATH" QN_CONFIG="$CONF" \
+  /bin/bash "$QN" doctor
+assert_contains "$(cat "$TMPROOT/conf.out")" "$CONF_NOTES" "the settings file moves the notes folder"
+assert_contains "$(cat "$TMPROOT/conf.out")" "$CONF" "doctor names the settings file it read"
+
+# The same file, read by the code the MCP server actually uses.
+mcp_notes="$(env -u QN_NOTES_DIR QN_CONFIG="$CONF" QN_ROOT="$ROOT" python3 -c '
+import os, sys
+sys.path.insert(0, os.path.join(os.environ["QN_ROOT"], "mcp"))
+import index
+print(index.notes_dir())' 2>/dev/null || true)"
+# TMPDIR ends in a slash, so $CONF_NOTES holds a doubled one. Python's
+# abspath collapses it, and `cd && pwd` collapses it the same way.
+assert_eq "$(cd "$CONF_NOTES" && pwd)" "$mcp_notes" "the MCP server reads the same settings file"
+
+# Precedence: the environment always beats the file.
+capture 30 "$TMPROOT/conf-env.out" env PATH="$STUB:$PATH" QN_CONFIG="$CONF" \
+  QN_NOTES_DIR="$QN_NOTES_DIR" /bin/bash "$QN" doctor
+assert_contains "$(cat "$TMPROOT/conf-env.out")" "QN_NOTES_DIR" "doctor says the environment variable won"
+assert_missing "$(cat "$TMPROOT/conf-env.out")" "notes:    $CONF_NOTES" "the environment beats the settings file"
+
+# A bad number must fail here, naming the setting, not deep inside find.
+printf 'prune_days = lots\n' > "$TMPROOT/bad-config"
+capture 20 "$TMPROOT/conf-bad.out" env PATH="$STUB:$PATH" QN_CONFIG="$TMPROOT/bad-config" \
+  QN_NOTES_DIR="$QN_NOTES_DIR" /bin/bash "$QN" prune
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "a bad prune_days is rejected" "it exited 0"
+else
+  pass "a bad prune_days is rejected"
+fi
+assert_contains "$(cat "$TMPROOT/conf-bad.out")" "prune_days" "the failure names the bad setting"
 
 # --------------------------------------------------------------------------
 section "consent, end to end"

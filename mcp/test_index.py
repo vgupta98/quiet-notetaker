@@ -725,6 +725,80 @@ class ActionQueryTests(IndexTestCase):
             index.actions(self.db, whose="ours")
 
 
+class ConfigTests(unittest.TestCase):
+    """The settings file, which is the only thing the MCP server can read.
+
+    Claude starts the server itself, so the shell's exports never reach it.
+    """
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.config = os.path.join(self._temporary.name, "config")
+        self._saved = {key: os.environ.get(key) for key in ("QN_CONFIG", "QN_NOTES_DIR")}
+        os.environ["QN_CONFIG"] = self.config
+        os.environ.pop("QN_NOTES_DIR", None)
+        self.addCleanup(self._restore)
+        self.addCleanup(self._temporary.cleanup)
+
+    def _restore(self) -> None:
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def write(self, text: str) -> None:
+        with open(self.config, "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def test_no_file_means_the_default(self) -> None:
+        self.assertIsNone(index.config_get("notes"))
+        self.assertEqual(index.notes_dir(), os.path.abspath(os.path.expanduser("~/Meetings")))
+
+    def test_reads_a_value(self) -> None:
+        self.write("notes = /tmp/somewhere\n")
+        self.assertEqual(index.config_get("notes"), "/tmp/somewhere")
+        self.assertEqual(index.notes_dir(), "/tmp/somewhere")
+
+    def test_whitespace_around_the_value_is_ignored(self) -> None:
+        self.write("   notes   =    /tmp/spaced   \n")
+        self.assertEqual(index.config_get("notes"), "/tmp/spaced")
+
+    def test_a_comment_is_not_a_setting(self) -> None:
+        self.write("# notes = /tmp/commented\n")
+        self.assertIsNone(index.config_get("notes"))
+
+    def test_a_tilde_is_expanded(self) -> None:
+        self.write("notes = ~/Documents/meetings\n")
+        self.assertEqual(index.notes_dir(),
+                         os.path.join(os.path.expanduser("~"), "Documents", "meetings"))
+
+    def test_an_empty_value_is_not_a_setting(self) -> None:
+        self.write("notes =\n")
+        self.assertIsNone(index.config_get("notes"))
+
+    def test_other_keys_are_left_alone(self) -> None:
+        self.write("prune_days = 7\nnotes = /tmp/here\nlanguage = en\n")
+        self.assertEqual(index.config_get("notes"), "/tmp/here")
+        self.assertEqual(index.config_get("prune_days"), "7")
+        self.assertIsNone(index.config_get("missing"))
+
+    def test_the_environment_beats_the_file(self) -> None:
+        self.write("notes = /tmp/from-file\n")
+        os.environ["QN_NOTES_DIR"] = "/tmp/from-env"
+        self.assertEqual(index.notes_dir(), "/tmp/from-env")
+
+    def test_an_unreadable_file_is_the_same_as_no_file(self) -> None:
+        """This runs before every query, so it must never raise."""
+        os.environ["QN_CONFIG"] = os.path.join(self._temporary.name, "nope", "config")
+        self.assertIsNone(index.config_get("notes"))
+        self.assertEqual(index.notes_dir(), os.path.abspath(os.path.expanduser("~/Meetings")))
+
+    def test_a_directory_where_the_file_should_be_does_not_raise(self) -> None:
+        os.environ["QN_CONFIG"] = self._temporary.name
+        self.assertIsNone(index.config_get("notes"))
+
+
 class NotesDirTests(unittest.TestCase):
     def test_the_environment_variable_wins(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

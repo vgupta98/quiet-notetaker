@@ -15,17 +15,70 @@
 #   qn doctor                                 check the setup
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NOTES_DIR="${QN_NOTES_DIR:-$HOME/Meetings}"
+# `qn` is meant to be symlinked onto your PATH, so it has to find the repo it
+# came from. BASH_SOURCE names the symlink, not its target, and every path
+# below is relative to the real script.
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in
+    /*) SELF="$LINK" ;;
+    *)  SELF="$(dirname "$SELF")/$LINK" ;;
+  esac
+done
+HERE="$(cd "$(dirname "$SELF")" && pwd)"
+
+# Settings live in one file, as `key = value`, one per line. `#` starts a
+# comment. An environment variable always beats the file, and the file always
+# beats the built-in default.
+CONFIG="${QN_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/quiet-notetaker/config}"
+
+config_get() {
+  if [ -f "$CONFIG" ]; then
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONFIG" \
+      | sed -e 's/[[:space:]]*$//' -e '/^$/d' | sed -n '1p'
+  fi
+}
+
+# setting <value-from-environment> <config-key> <default>
+setting() {
+  local found
+  if [ -n "$1" ]; then printf '%s' "$1"; return 0; fi
+  found="$(config_get "$2")"
+  if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
+  printf '%s' "$3"
+}
+
+NOTES_DIR="$(setting "${QN_NOTES_DIR:-}" notes "$HOME/Meetings")"
+# Bash does not expand a tilde that arrives inside a variable.
+NOTES_DIR="${NOTES_DIR/#\~/$HOME}"
+# Which of the three sources won, so `qn doctor` can say where to change it.
+if [ -n "${QN_NOTES_DIR:-}" ]; then
+  NOTES_FROM="the QN_NOTES_DIR environment variable"
+elif [ -n "$(config_get notes)" ]; then
+  NOTES_FROM="$CONFIG"
+else
+  NOTES_FROM="the built-in default"
+fi
+
 REC_DIR="$NOTES_DIR/.recordings"
 MODEL="${QN_MODEL:-$HERE/models/ggml-small.en.bin}"
 VAD_MODEL="${QN_VAD_MODEL:-$HERE/models/ggml-silero-v5.1.2.bin}"
-LANG_CODE="${QN_LANG:-en}"
+LANG_CODE="$(setting "${QN_LANG:-}" language en)"
 RECORDER="${QN_RECORDER:-$HERE/build/recorder}"
 WATCHER="${QN_WATCHER:-$HERE/build/watcher}"
 PROMPT="$HERE/prompt.md"
-PLAY_WINDOW="${QN_PLAY_WINDOW:-60}"
-PRUNE_DAYS="${QN_PRUNE_DAYS:-30}"
+PLAY_WINDOW="$(setting "${QN_PLAY_WINDOW:-}" play_window 60)"
+PRUNE_DAYS="$(setting "${QN_PRUNE_DAYS:-}" prune_days 30)"
+
+# A bad number in the config file must fail here, with the file named, rather
+# than somewhere inside `find` or `ffmpeg`.
+case "$PRUNE_DAYS" in
+  ""|*[!0-9]*) printf 'qn: prune_days must be a number of days, got %s\n' "$PRUNE_DAYS" >&2; exit 1 ;;
+esac
+case "$PLAY_WINDOW" in
+  ""|*[!0-9]*) printf 'qn: play_window must be a number of seconds, got %s\n' "$PLAY_WINDOW" >&2; exit 1 ;;
+esac
 
 die()  { printf 'qn: %s\n' "$1" >&2; exit 1; }
 step() { printf '\033[2m  %s\033[0m\n' "$1" >&2; }
@@ -595,7 +648,31 @@ cmd_doctor() {
   check "recorder built"  "[ -x '$RECORDER' ]"     "make build"
   check "watcher built"   "[ -x '$WATCHER' ]"      "make build"
   check "notes folder"    "[ -d '$NOTES_DIR' ]"    "it appears after your first meeting"
-  printf '\n  notes: %s\n\n' "$NOTES_DIR"
+
+  # A `qn` on your PATH that points at a moved or deleted repo gives confusing
+  # errors everywhere else. Name the problem here instead.
+  check "qn resolves to its repo" "[ -f '$HERE/prompt.md' ] && [ -f '$HERE/health.py' ]" \
+        "this qn points at $HERE, which is not a quiet-notetaker checkout"
+
+  printf '\n  notes:    %s\n' "$NOTES_DIR"
+  printf '  set by:   %s\n' "$NOTES_FROM"
+  printf '  code:     %s\n' "$HERE"
+  if [ -f "$CONFIG" ]; then
+    printf '  settings: %s\n' "$CONFIG"
+  else
+    printf '  settings: %s \033[2m(none yet)\033[0m\n' "$CONFIG"
+  fi
+
+  # Two notes folders, each holding half your meetings, with no error anywhere.
+  # That is the failure this warning exists to catch.
+  if [ "$NOTES_DIR" != "$HOME/Meetings" ] && [ -d "$HOME/Meetings" ]; then
+    if [ -n "$(find "$HOME/Meetings" -maxdepth 1 -name '*.md' -print -quit 2>/dev/null)" ]; then
+      printf '\n'
+      warn "$HOME/Meetings also holds notes, and nothing reads it now"
+      warn "move those .md files into $NOTES_DIR, or Claude will never see them"
+    fi
+  fi
+  printf '\n'
   return $ok
 }
 

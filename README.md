@@ -13,9 +13,19 @@ Contract: [SPEC.md](SPEC.md)
 
 ```sh
 brew install ffmpeg whisper-cpp
-make                 # builds the binaries, downloads the models (~466 MB)
-./qn doctor          # checks everything is in place
+make install
 ```
+
+`make install` builds the binaries, downloads the models (~466 MB), puts `qn`
+on your PATH, and runs `qn doctor`. Then `qn` works from any folder:
+
+```sh
+cd ~/anywhere
+qn team sync
+```
+
+The link points back at this checkout, so `git pull` upgrades you. `make
+uninstall` removes the link and never touches your notes.
 
 Grant **Screen Recording** to the app you run `qn` from — that is how macOS
 lets an app hear other apps. **Microphone** and **Calendar** are requested on
@@ -64,6 +74,9 @@ meeting.
 ```sh
 claude mcp add quiet-notetaker -- python3 "$PWD/mcp/server.py"
 ```
+
+The server finds your notes through `~/.config/quiet-notetaker/config`, so a
+custom notes folder needs nothing extra here.
 
 For Claude Desktop, add this to
 `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -187,6 +200,7 @@ mishearings in the notes above it, so a wrong correction is always checkable.
 | `people.py` | Keeps the roster of who you meet, and what you wrote about them |
 | `prompt.md` | The note template. Edit this to change the notes |
 | `mcp/` | The search index and the MCP server |
+| `Makefile` | `make install` puts `qn` on your PATH |
 
 ## Keeping it small
 
@@ -213,12 +227,42 @@ have ten meetings or ten thousand.
 
 ## Settings
 
-| Variable | Default |
-|---|---|
-| `QN_NOTES_DIR` | `~/Meetings` |
-| `QN_MODEL` | `models/ggml-small.en.bin` |
-| `QN_LANG` | `en` |
-| `QN_CONSENT` | unset — asks every time. Set to `full`/`local` to stop asking |
+Settings live in `~/.config/quiet-notetaker/config`, one `key = value` per
+line. Create it when you want to change something:
+
+```
+# where your meetings are kept
+notes = ~/Documents/notes/meetings
+
+prune_days  = 14
+language    = en
+play_window = 60
+```
+
+**Put the notes folder here, not in your shell.** Claude starts the MCP server
+itself, so an `export` in `~/.zshrc` never reaches it. The settings file is the
+one place both sides read. `qn doctor` shows the folder in use and where the
+setting came from:
+
+```
+notes:    /Users/vishalgupta/Documents/notes/meetings
+set by:   /Users/vishalgupta/.config/quiet-notetaker/config
+```
+
+It also warns when `~/Meetings` still holds notes that nothing reads any more.
+
+Every setting has an environment variable that overrides the file, for one-off
+runs and for scripts:
+
+| Variable | Setting | Default |
+|---|---|---|
+| `QN_NOTES_DIR` | `notes` | `~/Meetings` |
+| `QN_PRUNE_DAYS` | `prune_days` | `30` |
+| `QN_LANG` | `language` | `en` |
+| `QN_PLAY_WINDOW` | `play_window` | `60` |
+| `QN_MODEL` | — | `models/ggml-small.en.bin` |
+| `QN_CONSENT` | — | unset — asks every time. Set to `full`/`local` to stop asking |
+| `QN_CONFIG` | — | `~/.config/quiet-notetaker/config` |
 
 Better accuracy on hard audio:
 `make models MODEL_NAME=ggml-medium.en.bin`, then set `QN_MODEL`.

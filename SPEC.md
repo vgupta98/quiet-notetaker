@@ -152,7 +152,25 @@ it would delete and deletes nothing.
 An MCP reply is capped at `index.MAX_LIMIT` rows whatever the caller asks for,
 and every capped reply reports the real `total` beside `shown`.
 
-`QN_NOTES_DIR` overrides `~/Meetings` everywhere, including the MCP server.
+## Settings
+
+`~/.config/quiet-notetaker/config` holds `key = value` lines. `#` starts a
+comment. `QN_CONFIG` names another file, which is how the tests stay away from
+the developer's own.
+
+| Key | Environment override | Default |
+|---|---|---|
+| `notes` | `QN_NOTES_DIR` | `~/Meetings` |
+| `prune_days` | `QN_PRUNE_DAYS` | `30` |
+| `language` | `QN_LANG` | `en` |
+| `play_window` | `QN_PLAY_WINDOW` | `60` |
+
+Precedence is environment, then file, then default, everywhere including the
+MCP server. Claude starts the server itself, so the server never sees the
+shell's environment; the file is the only channel that reaches both sides.
+
+`qn` resolves its own symlinks before locating `models/`, `build/` and its
+helper scripts, so it works from any directory once linked onto `PATH`.
 
 ## Watcher event protocol
 

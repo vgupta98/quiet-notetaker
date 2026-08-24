@@ -27,6 +27,12 @@ from typing import Any
 DEFAULT_NOTES_DIR = "~/Meetings"
 INDEX_FILENAME = ".index.db"
 
+# Claude starts the MCP server itself, so the server never sees the shell's
+# environment. Reading the same settings file `qn` reads is what stops a moved
+# notes folder from silently searching an empty ~/Meetings.
+CONFIG_RELATIVE = os.path.join("quiet-notetaker", "config")
+_CONFIG_LINE = re.compile(r"^\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>.*?)\s*$")
+
 # SPEC.md: `full` is the one value that permits indexing. `local` keeps the
 # transcript on this machine and `none` should not exist at all.
 SHARING_FULL = "full"
@@ -66,9 +72,40 @@ _FTS_STRUCTURE = str.maketrans({character: " " for character in "{}():"})
 # paths
 # --------------------------------------------------------------------------
 
+def config_path() -> str:
+    """The settings file. QN_CONFIG overrides it, which is how tests isolate."""
+    override = os.environ.get("QN_CONFIG")
+    if override:
+        return override
+    root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(root, CONFIG_RELATIVE)
+
+
+def config_get(key: str) -> str | None:
+    """One `key = value` from the settings file. None when it is not set.
+
+    A file we cannot read is the same as no file. This runs before every
+    query, so it must never raise.
+    """
+    try:
+        with open(config_path(), encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.lstrip().startswith("#"):
+                    continue
+                match = _CONFIG_LINE.match(line)
+                if match is not None and match.group("key") == key and match.group("value"):
+                    return match.group("value")
+    except OSError:
+        return None
+    return None
+
+
 def notes_dir() -> str:
-    """Return the notes directory. QN_NOTES_DIR overrides the default."""
-    raw = os.environ.get("QN_NOTES_DIR") or DEFAULT_NOTES_DIR
+    """Return the notes directory.
+
+    QN_NOTES_DIR wins, then `notes` in the settings file, then ~/Meetings.
+    """
+    raw = os.environ.get("QN_NOTES_DIR") or config_get("notes") or DEFAULT_NOTES_DIR
     return os.path.abspath(os.path.expanduser(raw))
 
 
