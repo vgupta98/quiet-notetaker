@@ -264,7 +264,7 @@ qn_has() {
 
 # SPEC.md, "CLI surface". Every one of these must exist. A rename is a broken
 # contract, so it fails here instead of quietly skipping the tests below.
-for sub in redo play index pending approve vocab people doctor; do
+for sub in redo play index pending approve vocab people prune doctor; do
   if qn_has "$sub"; then
     pass "qn has the $sub subcommand"
   else
@@ -428,6 +428,74 @@ PYEOF
   assert_contains "$(cat "$QN_NOTES_DIR/people.md")" "my manager" "your note survives the next refresh"
 else
   fail "qn people" "no people subcommand in qn"
+fi
+
+# 7. qn prune deletes old audio, and nothing else.
+if qn_has prune; then
+  PRUNE_ROOT="$TMPROOT/prunable"
+  mkdir -p "$PRUNE_ROOT/.recordings"
+
+  # One old and shareable, one old but still held, one shareable but new.
+  for spec in "old-full full" "old-held local" "new-full full"; do
+    pid="$(printf '%s' "$spec" | cut -d' ' -f1)"
+    verdict="$(printf '%s' "$spec" | cut -d' ' -f2)"
+    work="$PRUNE_ROOT/.recordings/2026-01-01-1000-$pid"
+    mkdir -p "$work"
+    printf '%s\n' "$verdict" > "$work/consent"
+    printf 'audio' > "$work/them.m4a"
+    printf 'audio' > "$work/me.m4a"
+    printf '[00:00] Me: keep me\n' > "$work/transcript.txt"
+    case "$pid" in
+      old-*) touch -t 202001010000 "$work/them.m4a" "$work/me.m4a" ;;
+    esac
+  done
+
+  # A dry run must delete nothing at all.
+  capture 30 "$TMPROOT/prune-dry.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$PRUNE_ROOT" \
+    QN_DRY_RUN=1 /bin/bash "$QN" prune
+  assert_eq "0" "$CAPTURE_CODE" "qn prune --dry-run exits 0"
+  assert_contains "$(cat "$TMPROOT/prune-dry.out")" "would free" "a dry run says it only would free space"
+  assert_file "$PRUNE_ROOT/.recordings/2026-01-01-1000-old-full/them.m4a" "a dry run deletes nothing"
+
+  capture 30 "$TMPROOT/prune.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$PRUNE_ROOT" \
+    /bin/bash "$QN" prune
+  assert_eq "0" "$CAPTURE_CODE" "qn prune exits 0"
+
+  if [ -f "$PRUNE_ROOT/.recordings/2026-01-01-1000-old-full/them.m4a" ]; then
+    fail "qn prune deletes old audio" "them.m4a is still there"
+  else
+    pass "qn prune deletes old audio"
+  fi
+  assert_file "$PRUNE_ROOT/.recordings/2026-01-01-1000-old-full/transcript.txt" \
+    "qn prune keeps the transcript"
+  assert_file "$PRUNE_ROOT/.recordings/2026-01-01-1000-old-full/consent" \
+    "qn prune keeps the consent record"
+  assert_file "$PRUNE_ROOT/.recordings/2026-01-01-1000-old-held/them.m4a" \
+    "qn prune leaves a meeting still awaiting approval"
+  assert_file "$PRUNE_ROOT/.recordings/2026-01-01-1000-new-full/them.m4a" \
+    "qn prune leaves audio newer than the cutoff"
+
+  # --older-than 0 makes everything old, but the held one is still protected.
+  capture 30 "$TMPROOT/prune0.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$PRUNE_ROOT" \
+    /bin/bash "$QN" --older-than 0d prune
+  assert_file "$PRUNE_ROOT/.recordings/2026-01-01-1000-old-held/them.m4a" \
+    "a held meeting survives --older-than 0d"
+
+  capture 30 "$TMPROOT/prune-bad.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$PRUNE_ROOT" \
+    /bin/bash "$QN" --older-than lots prune
+  if [ "$CAPTURE_CODE" -eq 0 ]; then
+    fail "--older-than rejects a non-number" "it exited 0"
+  else
+    pass "--older-than rejects a non-number"
+  fi
+
+  # A redo on pruned audio must explain itself, not fail inside whisper.
+  capture 30 "$TMPROOT/prune-redo.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$PRUNE_ROOT" \
+    QN_MODEL="$TMPROOT/model.bin" \
+    /bin/bash "$QN" redo "2026-01-01-1000-old-full"
+  assert_contains "$(cat "$TMPROOT/prune-redo.out")" "pruned" "qn redo on pruned audio says the audio was pruned"
+else
+  fail "qn prune" "no prune subcommand in qn"
 fi
 
 # --------------------------------------------------------------------------

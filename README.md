@@ -188,8 +188,28 @@ mishearings in the notes above it, so a wrong correction is always checkable.
 | `prompt.md` | The note template. Edit this to change the notes |
 | `mcp/` | The search index and the MCP server |
 
-Recordings stay in `~/Meetings/.recordings/`, about 24 MB per hour. Delete them
-whenever you like — the notes keep the full transcript.
+## Keeping it small
+
+Audio is the only thing that really grows — about 70 MB per hour, two tracks at
+96 kbps. The notes and transcripts are about 42 KB per hour, so **forty years of
+transcripts fit in under a gigabyte.**
+
+```sh
+./qn prune                          # delete audio older than 30 days
+./qn --older-than 7d prune          # be stricter
+QN_DRY_RUN=1 ./qn prune             # see what it would delete
+```
+
+It deletes the two `.m4a` files and nothing else. You keep the notes, the
+transcript, and the record of what you consented to. The only thing you lose is
+`qn play` — hearing the real voice.
+
+It never prunes a meeting still waiting for your approval, or the one being
+recorded right now.
+
+Searching does not grow either. `meetings_search` returns pointers and short
+snippets, never documents, so a question costs the same context whether you
+have ten meetings or ten thousand.
 
 ## Settings
 

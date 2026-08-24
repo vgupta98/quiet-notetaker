@@ -599,6 +599,29 @@ class SearchCapTests(unittest.TestCase):
         wide = index.search(self.db, "widget", limit=100)
         self.assertEqual((wide["total"], wide["shown"]), (12, 12))
 
+    def test_an_absurd_limit_is_clamped(self) -> None:
+        """One reply must never be able to flood the model's context."""
+        self.assertEqual(index.search(self.db, "widget", limit=100_000)["shown"], 12)
+
+    def test_the_clamp_is_the_stated_maximum(self) -> None:
+        for number in range(12, index.MAX_LIMIT + 20):
+            write_note(
+                self.notes,
+                f"2026-04-{(number % 28) + 1:02d}-1000-extra-{number}",
+                f"---\ntitle: \"Extra {number}\"\ndate: 2026-04-{(number % 28) + 1:02d} 10:00\n"
+                f"attendees: []\nsharing: full\n---\n\n## Summary\n- the widget review, part {number}\n",
+            )
+        index.refresh(self.db, self.notes)
+        flooded = index.search(self.db, "widget", limit=100_000)
+        self.assertGreater(flooded["total"], index.MAX_LIMIT)
+        self.assertEqual(flooded["shown"], index.MAX_LIMIT)
+
+    def test_a_clamped_reply_still_reports_the_real_total(self) -> None:
+        """A truncated answer must never look complete."""
+        capped = index.search(self.db, "widget", limit=1)
+        self.assertEqual(capped["total"], 12)
+        self.assertEqual(capped["shown"], 1)
+
 
 class GetTests(IndexTestCase):
     def test_returns_the_notes_and_never_the_transcript(self) -> None:
@@ -689,6 +712,11 @@ class ActionQueryTests(IndexTestCase):
         self.assertEqual(found["total"], 6)
         self.assertEqual(found["shown"], 2)
         self.assertEqual(len(found["items"]), 2)
+
+    def test_an_absurd_limit_is_clamped(self) -> None:
+        found = index.actions(self.db, status="all", whose="all", limit=100_000)
+        self.assertLessEqual(found["shown"], index.MAX_LIMIT)
+        self.assertEqual(found["total"], 6)
 
     def test_bad_arguments_are_rejected(self) -> None:
         with self.assertRaises(ValueError):

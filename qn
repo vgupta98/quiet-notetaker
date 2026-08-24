@@ -11,6 +11,7 @@
 #   qn index                                  rebuild the search index
 #   qn vocab                                  show the words it has learned
 #   qn people                                 show who you meet, and add notes
+#   qn prune [--older-than 30d]               delete old audio, keep the notes
 #   qn doctor                                 check the setup
 set -euo pipefail
 
@@ -24,6 +25,7 @@ RECORDER="${QN_RECORDER:-$HERE/build/recorder}"
 WATCHER="${QN_WATCHER:-$HERE/build/watcher}"
 PROMPT="$HERE/prompt.md"
 PLAY_WINDOW="${QN_PLAY_WINDOW:-60}"
+PRUNE_DAYS="${QN_PRUNE_DAYS:-30}"
 
 die()  { printf 'qn: %s\n' "$1" >&2; exit 1; }
 step() { printf '\033[2m  %s\033[0m\n' "$1" >&2; }
@@ -431,6 +433,9 @@ cmd_redo() {
   local work people="" id
   work="$(resolve_recording "$1")"
   id="$(basename "$work")"
+  if [ -f "$work/.pruned" ]; then
+    die "the audio for $id was pruned — the note still holds the full transcript"
+  fi
   if [ -n "${2:-}" ]; then printf '%s\n' "$2" > "$work/attendees.txt"; fi
   if [ -s "$work/attendees.txt" ]; then people="$(cat "$work/attendees.txt")"; fi
   process_recording "$work" "$(title_from_id "$id")" "$people"
@@ -492,6 +497,66 @@ cmd_play() {
   rm -rf "$clipdir"
 }
 
+# Audio is over 99% of everything this tool stores, and the note already holds
+# the full transcript. So pruning deletes the two .m4a files and nothing else.
+# The transcript, the summary and the consent record all stay.
+cmd_prune() {
+  local days="$1"
+  local active="" freed=0 pruned=0 held=0 recent=0 dir work
+  if [ -s "$REC_DIR/.recording" ]; then active="$(cat "$REC_DIR/.recording")"; fi
+
+  for dir in "$REC_DIR"/*/; do
+    if [ ! -d "$dir" ]; then continue; fi
+    work="${dir%/}"
+
+    # A meeting still waiting for your approval needs its audio. `qn approve`
+    # re-transcribes from the tracks, so pruning it would strand the meeting.
+    if [ "$(read_consent "$work")" != "full" ]; then
+      held=$((held + 1)); continue
+    fi
+    if [ "$work" = "$active" ]; then
+      held=$((held + 1)); continue
+    fi
+
+    local found=0 track size
+    for track in "$work/them.m4a" "$work/me.m4a"; do
+      if [ ! -f "$track" ]; then continue; fi
+      if [ -z "$(find "$track" -mtime "+$days" -print 2>/dev/null)" ]; then
+        found=-1; break
+      fi
+      size="$(wc -c < "$track" | tr -d ' ')"
+      freed=$((freed + size))
+      found=1
+      if [ -z "${QN_DRY_RUN:-}" ]; then rm -f "$track"; fi
+    done
+
+    # A marker, so `qn redo` can say the audio was pruned rather than fail
+    # somewhere inside whisper with a missing-file error.
+    if [ "$found" -eq 1 ] && [ -z "${QN_DRY_RUN:-}" ]; then
+      date '+%Y-%m-%d' > "$work/.pruned"
+    fi
+
+    if [ "$found" -eq 1 ]; then
+      pruned=$((pruned + 1))
+      printf '  %s\n' "$(basename "$work")"
+    elif [ "$found" -eq -1 ]; then
+      recent=$((recent + 1))
+    fi
+  done
+
+  local verb="freed" amount
+  if [ -n "${QN_DRY_RUN:-}" ]; then verb="would free"; fi
+  # Integer division alone reports "0 MB" after pruning several short calls.
+  if [ "$freed" -ge 1048576 ]; then
+    amount="$((freed / 1048576)) MB"
+  else
+    amount="$((freed / 1024)) KB"
+  fi
+  step "$pruned recording(s) pruned, $verb $amount"
+  if [ "$recent" -gt 0 ]; then step "$recent newer than $days days, left alone"; fi
+  if [ "$held" -gt 0 ]; then step "$held still awaiting approval, left alone"; fi
+}
+
 cmd_people() {
   python3 "$HERE/people.py" "$NOTES_DIR" >/dev/null
   printf '\n'
@@ -540,11 +605,19 @@ need ffmpeg "brew install ffmpeg"
 
 attendees=""
 sharing="full"
+keep_days="$PRUNE_DAYS"
 while [ $# -gt 0 ]; do
   case "${1:-}" in
     --with)  [ $# -ge 2 ] || die "usage: qn --with \"Name, Name\" [title...]"
              attendees="$2"; shift 2 ;;
     --local) sharing="local"; shift ;;
+    --older-than)
+             [ $# -ge 2 ] || die "usage: qn prune --older-than 30d"
+             keep_days="$(printf '%s' "$2" | sed 's/[dD]$//')"
+             case "$keep_days" in
+               ""|*[!0-9]*) die "--older-than wants a number of days, like 30d" ;;
+             esac
+             shift 2 ;;
     *)       break ;;
   esac
 done
@@ -557,6 +630,7 @@ case "${1:-}:$#" in
   index:1)          cmd_index; exit $? ;;
   vocab:1)          cmd_vocab; exit $? ;;
   people:1)         cmd_people; exit $? ;;
+  prune:1)          cmd_prune "$keep_days"; exit $? ;;
   doctor:1)         cmd_doctor; exit $? ;;
   redo:2)           cmd_redo "$2" "$attendees"; exit $? ;;
   approve:2)        cmd_approve "$2"; exit $? ;;

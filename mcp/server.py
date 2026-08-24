@@ -64,8 +64,9 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "How many results to return. Default 10.",
+                    "description": "How many results to return. Default 10, most 100.",
                     "minimum": 1,
+                    "maximum": 100,
                     "default": 10,
                 },
             },
@@ -159,8 +160,9 @@ TOOLS: list[dict[str, Any]] = [
                 "to": dict(_DATE, description="Only meetings on or before this date."),
                 "limit": {
                     "type": "integer",
-                    "description": "How many items to return. Default 50.",
+                    "description": "How many items to return. Default 50, most 100.",
                     "minimum": 1,
+                    "maximum": 100,
                     "default": 50,
                 },
             },

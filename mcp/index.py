@@ -39,6 +39,10 @@ SCHEMA_VERSION = 3
 SNIPPET_TOKENS = 14
 MAX_TRANSCRIPT_LINES = 2000
 
+# A caller asking for 5000 rows would flood the model's context with one reply.
+# The reply says what it dropped, so a truncated answer is never silent.
+MAX_LIMIT = 100
+
 _FTS_COLUMNS = {"notes": ("notes_text", 1), "transcript": ("transcript_text", 2)}
 
 _TRANSCRIPT_HEADING = re.compile(r"^##[ \t]+Transcript[ \t]*$", re.MULTILINE)
@@ -560,7 +564,7 @@ def search(
     """
     if not str(query).strip():
         raise ValueError("query must not be empty")
-    limit = max(1, int(limit))
+    limit = min(MAX_LIMIT, max(1, int(limit)))
 
     connection = _connect(db_path)
     try:
@@ -695,7 +699,7 @@ def actions(
         raise ValueError(f"status must be open, done or all, got {status!r}")
     if whose not in ("mine", "theirs", "all"):
         raise ValueError(f"whose must be mine, theirs or all, got {whose!r}")
-    limit = max(1, int(limit))
+    limit = min(MAX_LIMIT, max(1, int(limit)))
 
     clauses = []
     parameters: list[Any] = []

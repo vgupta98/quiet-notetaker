@@ -101,6 +101,7 @@ qn watch                        auto-record detected meetings
 qn index                        rebuild ~/Meetings/.index.db
 qn vocab                        rebuild and show the learned vocabulary
 qn people                       rebuild and show the roster of who you meet
+qn prune [--older-than 30d]     delete audio older than N days, keep the notes
 qn doctor                       check dependencies and permissions
 ```
 
@@ -130,6 +131,26 @@ Two rules hold:
 
 A deleted person is recorded in `.people-removed` and never re-added. A person
 typed in by hand always survives, even one deleted before.
+
+## Retention
+
+Audio is over 99% of what the tool stores, at about 70 MB per hour. The note
+already holds the full transcript, so `qn prune` deletes `them.m4a` and
+`me.m4a` and nothing else.
+
+Two recordings are never pruned:
+
+  A meeting whose consent is not `full`. `qn approve` re-transcribes from the
+  tracks, so pruning it would strand the meeting forever.
+
+  The recording in progress, named by `.recordings/.recording`.
+
+A pruned recording gets a `.pruned` marker. `qn redo` reads it and says the
+audio is gone, instead of failing inside whisper. `QN_DRY_RUN=1` reports what
+it would delete and deletes nothing.
+
+An MCP reply is capped at `index.MAX_LIMIT` rows whatever the caller asks for,
+and every capped reply reports the real `total` beside `shown`.
 
 `QN_NOTES_DIR` overrides `~/Meetings` everywhere, including the MCP server.
 
