@@ -10,13 +10,20 @@ under test.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
-import sys
 import tempfile
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+for _path in (HERE, os.path.join(ROOT, "lib"), os.path.join(ROOT, "mcp")):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
 import unittest
 
-SERVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py")
+SERVER = os.path.join(ROOT, "mcp", "server.py")
 TIMEOUT_SECONDS = 60
 FENCE = "```"
 

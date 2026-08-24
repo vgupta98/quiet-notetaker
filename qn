@@ -243,7 +243,7 @@ transcribe_track() {
   # them in play past the first window, which is where long meetings drift.
   local prime=()
   local words
-  words="$(python3 "$HERE/vocab.py" "$NOTES_DIR" --prompt 2>/dev/null || true)"
+  words="$(python3 "$HERE/lib/vocab.py" "$NOTES_DIR" --prompt 2>/dev/null || true)"
   if [ -n "$words" ]; then
     prime=(--prompt "$words" --carry-initial-prompt)
   fi
@@ -314,7 +314,7 @@ process_recording() {
   fi
 
   local report capture warnings
-  report="$(python3 "$HERE/health.py" "$work")"
+  report="$(python3 "$HERE/lib/health.py" "$work")"
   capture="$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["capture"])')"
   warnings="$(printf '%s' "$report" | python3 -c '
 import json, sys
@@ -331,7 +331,7 @@ for w in json.load(sys.stdin)["warnings"]:
   step "transcribing"
   transcribe_track "$work" them
   transcribe_track "$work" me
-  python3 "$HERE/merge.py" "$work" > "$work/transcript.txt"
+  python3 "$HERE/lib/merge.py" "$work" > "$work/transcript.txt"
   if [ ! -s "$work/transcript.txt" ]; then
     die "nothing was transcribed — the recording is still in $work"
   fi
@@ -345,7 +345,7 @@ for w in json.load(sys.stdin)["warnings"]:
   local who="$people"
   if [ -n "$people" ]; then
     local enriched
-    enriched="$(python3 "$HERE/people.py" "$NOTES_DIR" --context "$people" 2>/dev/null || true)"
+    enriched="$(python3 "$HERE/lib/people.py" "$NOTES_DIR" --context "$people" 2>/dev/null || true)"
     if [ -n "$enriched" ]; then who="$enriched"; fi
   fi
 
@@ -377,8 +377,8 @@ refresh_index_quietly() {
     python3 "$HERE/mcp/index.py" "$NOTES_DIR" >/dev/null 2>&1 || true
   fi
   # Learning happens after the notes exist, never from the raw transcript.
-  python3 "$HERE/vocab.py" "$NOTES_DIR" >/dev/null 2>&1 || true
-  python3 "$HERE/people.py" "$NOTES_DIR" >/dev/null 2>&1 || true
+  python3 "$HERE/lib/vocab.py" "$NOTES_DIR" >/dev/null 2>&1 || true
+  python3 "$HERE/lib/people.py" "$NOTES_DIR" >/dev/null 2>&1 || true
 
   # Opt-in housekeeping, on the same code path as `qn prune`. That is what
   # keeps a meeting awaiting approval, and the recording in progress, safe.
@@ -642,14 +642,14 @@ cmd_prune() {
 }
 
 cmd_people() {
-  python3 "$HERE/people.py" "$NOTES_DIR" >/dev/null
+  python3 "$HERE/lib/people.py" "$NOTES_DIR" >/dev/null
   printf '\n'
   sed -e '/^#/d' -e '/^[[:space:]]*$/d' -e 's/^/  /' "$NOTES_DIR/people.md" 2>/dev/null || true
   printf '\n  edit %s to say who these people are — Claude reads it\n\n' "$NOTES_DIR/people.md"
 }
 
 cmd_vocab() {
-  python3 "$HERE/vocab.py" "$NOTES_DIR"
+  python3 "$HERE/lib/vocab.py" "$NOTES_DIR"
   printf '\n'
   sed 's/^/  /' "$NOTES_DIR/vocabulary.txt" 2>/dev/null || true
   printf '\n  edit that file to correct it — deleted lines never come back\n\n'

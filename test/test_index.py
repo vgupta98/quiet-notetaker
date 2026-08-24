@@ -7,13 +7,18 @@ never read the real ~/Meetings and never depend on another file in this repo.
 
 from __future__ import annotations
 
-import os
 import sqlite3
-import sys
 import tempfile
-import unittest
+import os
+import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+for _path in (HERE, os.path.join(ROOT, "lib"), os.path.join(ROOT, "mcp")):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
+import unittest
 
 import index  # noqa: E402
 

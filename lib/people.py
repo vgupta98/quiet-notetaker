@@ -33,7 +33,8 @@ import re
 import sys
 from dataclasses import dataclass, field
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mcp"))
 
 import index  # noqa: E402  (path set above)
 

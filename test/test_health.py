@@ -4,6 +4,15 @@ These exercise parsing and judgement only. Both are pure, so no audio file and
 no ffmpeg process is involved.
 """
 
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+for _path in (HERE, os.path.join(ROOT, "lib"), os.path.join(ROOT, "mcp")):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
 import unittest
 
 from health import Measurement, _parse, judge

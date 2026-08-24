@@ -5,14 +5,22 @@ helpers are extracted from the script itself, so a rename breaks the test
 rather than silently skipping it.
 """
 
-import os
 import pathlib
 import re
 import subprocess
 import tempfile
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+for _path in (HERE, os.path.join(ROOT, "lib"), os.path.join(ROOT, "mcp")):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
 import unittest
 
-QN = pathlib.Path(__file__).parent / "qn"
+QN = pathlib.Path(ROOT) / "qn"
 
 
 def call_helper(name: str, *args: str) -> str:

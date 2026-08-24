@@ -5,8 +5,16 @@ decoder's own output reinforces its own mistakes, so these assert that the
 path simply does not exist.
 """
 
-import os
 import tempfile
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+for _path in (HERE, os.path.join(ROOT, "lib"), os.path.join(ROOT, "mcp")):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
 import unittest
 
 import vocab

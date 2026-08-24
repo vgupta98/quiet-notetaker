@@ -151,7 +151,7 @@ assert_eq "0" "$bad_lines" "every transcript line matches the SPEC format"
 # The fixtures must agree with the real merger.
 merge_bad=0
 for work in "$QN_NOTES_DIR"/.recordings/*/; do
-  if ! python3 "$ROOT/merge.py" "$work" | diff -q - "$work/transcript.txt" >/dev/null 2>&1; then
+  if ! python3 "$ROOT/lib/merge.py" "$work" | diff -q - "$work/transcript.txt" >/dev/null 2>&1; then
     merge_bad=$((merge_bad + 1))
   fi
 done
@@ -212,37 +212,29 @@ fi
 # --------------------------------------------------------------------------
 section "python unit tests"
 # --------------------------------------------------------------------------
-if [ -n "$(find "$ROOT/mcp" -name 'test_*.py' -print -quit 2>/dev/null)" ]; then
-  if (cd "$ROOT" && python3 -m unittest discover -s mcp -p 'test_*.py'); then
-    pass "python unittest discover"
-  else
-    fail "python unittest discover" "see the output above"
-  fi
+# Every test_*.py lives in test/, so one call finds all of them. This used to
+# be three calls over three directories, and `unittest discover` does not
+# recurse into a directory that is not a package. A file in a fourth place ran
+# nowhere, and said nothing about it.
+if (cd "$ROOT" && python3 -m unittest discover -s "$HERE" -p 'test_*.py' -t "$HERE"); then
+  pass "python unittest"
 else
-  skip "python unittest discover" "mcp/ has no test_*.py yet"
+  fail "python unittest" "see the output above"
 fi
 
-# --------------------------------------------------------------------------
-if ls "$ROOT"/test_*.py >/dev/null 2>&1; then
-  if (cd "$ROOT" && python3 -m unittest discover -s . -p 'test_*.py' -t .); then
-    pass "python unittest (health, merge)"
+# A module with no test file beside it is a hole in the suite, so name it here
+# rather than let the count quietly stay the same.
+for module in "$ROOT"/lib/*.py "$ROOT"/mcp/*.py; do
+  base="$(basename "$module" .py)"
+  case "$base" in
+    __*) continue ;;
+  esac
+  if [ -f "$HERE/test_$base.py" ]; then
+    pass "$base has tests"
   else
-    fail "python unittest (health, merge)" "see the output above"
+    fail "$base has tests" "no test/test_$base.py"
   fi
-else
-  skip "python unittest (health, merge)" "no root test_*.py"
-fi
-
-# --------------------------------------------------------------------------
-if ls "$HERE"/test_*.py >/dev/null 2>&1; then
-  if (cd "$ROOT" && python3 -m unittest discover -s "$HERE" -p 'test_*.py' -t "$HERE"); then
-    pass "python unittest (test/)"
-  else
-    fail "python unittest (test/)" "see the output above"
-  fi
-else
-  fail "python unittest (test/)" "test/ has no test_*.py"
-fi
+done
 
 section "watcher"
 # --------------------------------------------------------------------------

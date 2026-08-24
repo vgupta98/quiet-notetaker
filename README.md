@@ -191,16 +191,17 @@ mishearings in the notes above it, so a wrong correction is always checkable.
 
 | Path | What it does |
 |---|---|
+| `qn` | The command you actually use |
+| `prompt.md` | The note template. Edit this to change the notes |
+| `Makefile` | `make install` puts `qn` on your PATH |
 | `recorder/main.swift` | Captures both tracks with ScreenCaptureKit |
 | `recorder/watcher.swift` | Detects meetings starting and ending |
-| `qn` | The command you actually use |
-| `health.py` | Decides whether a recording is usable |
-| `merge.py` | Interleaves the two transcripts by timestamp |
-| `vocab.py` | Learns your meetings' words and primes whisper with them |
-| `people.py` | Keeps the roster of who you meet, and what you wrote about them |
-| `prompt.md` | The note template. Edit this to change the notes |
+| `lib/health.py` | Decides whether a recording is usable |
+| `lib/merge.py` | Interleaves the two transcripts by timestamp |
+| `lib/vocab.py` | Learns your meetings' words and primes whisper with them |
+| `lib/people.py` | Keeps the roster of who you meet, and what you wrote about them |
 | `mcp/` | The search index and the MCP server |
-| `Makefile` | `make install` puts `qn` on your PATH |
+| `test/` | Every test, and the harness that runs them |
 
 ## Keeping it small
 

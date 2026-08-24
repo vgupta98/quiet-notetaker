@@ -158,6 +158,23 @@ deleted nothing.
 An MCP reply is capped at `index.MAX_LIMIT` rows whatever the caller asks for,
 and every capped reply reports the real `total` beside `shown`.
 
+## Layout
+
+```
+qn                the command, and the only entry point
+prompt.md         the note template
+lib/              health.py, merge.py, vocab.py, people.py
+mcp/              index.py, server.py
+recorder/         main.swift, watcher.swift, and their plists
+test/             every test_*.py, plus run.sh and the fixtures
+```
+
+Every test file lives in `test/`, so `test/run.sh` finds them in one call.
+`unittest discover` does not recurse into a directory that is not a package,
+so a test file anywhere else would run nowhere and say nothing about it. The
+suite also fails when a module in `lib/` or `mcp/` has no `test_<name>.py`
+beside it.
+
 ## Settings
 
 `~/.config/quiet-notetaker/config` holds `key = value` lines. `#` starts a

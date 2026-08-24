@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """Tests for people.py — the roster that turns "Them" into a name."""
 
-import os
 import shutil
 import tempfile
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+for _path in (HERE, os.path.join(ROOT, "lib"), os.path.join(ROOT, "mcp")):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
 import unittest
 
 import people

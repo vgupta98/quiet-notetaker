@@ -5,6 +5,15 @@ pause from the previous segment's START made every long segment look like a
 pause, and whisper emits segments up to 30 seconds long.
 """
 
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+for _path in (HERE, os.path.join(ROOT, "lib"), os.path.join(ROOT, "mcp")):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
 import unittest
 
 from merge import build_turns, format_turns
