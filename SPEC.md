@@ -175,6 +175,23 @@ so a test file anywhere else would run nowhere and say nothing about it. The
 suite also fails when a module in `lib/` or `mcp/` has no `test_<name>.py`
 beside it.
 
+## Voice grouping
+
+`diarize = yes` runs `lib/diarize.py` over `them.m4a` before transcription and
+writes `speakers.json` into the recording directory. `merge.py` reads it and
+labels a `them` line `Them A`, `Them B` by longest overlap. The `me` track is
+never relabelled; it is already its own file.
+
+The labels are a hint for Claude, never an identity. `prompt.md` states that
+the words win when they disagree with the letter. Nothing in this tool converts
+a letter into a name automatically.
+
+A cluster under `MIN_SPEAKER_SECONDS` gets no letter, and its lines stay
+`Them`. At most `MAX_SPEAKERS` letters are handed out, busiest voice first.
+
+Everything is optional. Without `make diarize` the models are absent, the step
+is skipped, and the transcript is byte-identical to one produced without it.
+
 ## Settings
 
 `~/.config/quiet-notetaker/config` holds `key = value` lines. `#` starts a
@@ -186,6 +203,7 @@ the developer's own.
 | `notes` | `QN_NOTES_DIR` | `~/Meetings` |
 | `prune_days` | `QN_PRUNE_DAYS` | `30` |
 | `auto_prune` | `QN_AUTO_PRUNE` | `no` |
+| `diarize` | `QN_DIARIZE` | `no` |
 | `language` | `QN_LANG` | `en` |
 | `play_window` | `QN_PLAY_WINDOW` | `60` |
 

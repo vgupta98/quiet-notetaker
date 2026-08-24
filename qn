@@ -82,6 +82,16 @@ esac
 
 # Housekeeping after each recording. Off unless you ask for it: nobody's audio
 # disappears because they pulled a new version.
+# Voice grouping on the `them` track. Off unless you ran `make diarize`, and
+# off unless you ask, because it adds about seven minutes per hour of audio.
+DIARIZE="$(setting "${QN_DIARIZE:-}" diarize no)"
+case "$DIARIZE" in
+  yes|true|on|1)  DIARIZE=yes ;;
+  no|false|off|0) DIARIZE=no ;;
+  *) printf 'qn: diarize must be yes or no, got %s\n' "$DIARIZE" >&2; exit 1 ;;
+esac
+VENV_PYTHON="${QN_VENV_PYTHON:-$HERE/.venv/bin/python}"
+
 AUTO_PRUNE="$(setting "${QN_AUTO_PRUNE:-}" auto_prune no)"
 case "$AUTO_PRUNE" in
   yes|true|on|1)      AUTO_PRUNE=yes ;;
@@ -340,6 +350,14 @@ print("[" + ", ".join(json.dumps(w) for w in found) + "]")')"
 import json, sys
 for w in json.load(sys.stdin)["warnings"]:
     print("  \033[33mwarning: " + w + "\033[0m")' >&2
+  fi
+
+  # Before transcription, so a slow model does not delay the audio check, and
+  # so merge.py finds speakers.json already written.
+  if [ "$DIARIZE" = "yes" ] && [ -x "$VENV_PYTHON" ] && [ -f "$HERE/models/segmentation.onnx" ]; then
+    step "grouping voices — this is slower than the transcript"
+    "$VENV_PYTHON" "$HERE/lib/diarize.py" "$work" >/dev/null 2>&1 || \
+      warn "voice grouping failed — the transcript is unaffected"
   fi
 
   step "transcribing"

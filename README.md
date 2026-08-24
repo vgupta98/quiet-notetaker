@@ -164,6 +164,33 @@ what turns a `Them` line into a name.
 Names are never guessed from audio. They come from `--with` or from your
 calendar, so a person typed them.
 
+### Grouping the other voices (optional)
+
+`Them` is a mixdown of everyone else, so it is one label for a whole room. You
+can group it by voice:
+
+```sh
+make diarize        # 49 MB environment, 28 MB of models, both MIT
+```
+
+Then in your settings file:
+
+```
+diarize = yes
+```
+
+The transcript gains `Them A:`, `Them B:` labels, and Claude uses them
+alongside the roster to work out who said what.
+
+**These letters are a hint, not an identity, and the tool will not turn them
+into names by itself.** Measured on a real 26-minute standup, the clustering
+put a question and its answer in the same group — two people, one letter.
+`prompt.md` tells Claude to believe the words over the letter when they
+disagree, so a bad group can be overruled. An automatic name could not be.
+
+It costs about seven minutes of processing per hour of audio, on top of the
+transcript. That is why it is off by default.
+
 ## How it works
 
 Your Mac records two tracks: everything the meeting app plays (`them.m4a`) and
@@ -200,6 +227,8 @@ mishearings in the notes above it, so a wrong correction is always checkable.
 | `lib/merge.py` | Interleaves the two transcripts by timestamp |
 | `lib/vocab.py` | Learns your meetings' words and primes whisper with them |
 | `lib/people.py` | Keeps the roster of who you meet, and what you wrote about them |
+| `lib/names.py` | Reads a person out of a calendar invite's email address |
+| `lib/diarize.py` | Optional. Groups the `them` track by voice |
 | `mcp/` | The search index and the MCP server |
 | `test/` | Every test, and the harness that runs them |
 
@@ -272,6 +301,7 @@ runs and for scripts:
 | `QN_NOTES_DIR` | `notes` | `~/Meetings` |
 | `QN_PRUNE_DAYS` | `prune_days` | `30` |
 | `QN_AUTO_PRUNE` | `auto_prune` | `no` |
+| `QN_DIARIZE` | `diarize` | `no` |
 | `QN_LANG` | `language` | `en` |
 | `QN_PLAY_WINDOW` | `play_window` | `60` |
 | `QN_MODEL` | — | `models/ggml-small.en.bin` |

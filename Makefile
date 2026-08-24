@@ -9,7 +9,7 @@ SWIFTC = swiftc -O -swift-version 5 -target arm64-apple-macos15.0
 # and it needs no sudo.
 BIN ?= $(HOME)/.local/bin
 
-.PHONY: all build models test clean install uninstall
+.PHONY: all build models test clean install uninstall diarize
 
 all: build models
 
@@ -41,6 +41,35 @@ models/$(MODEL_NAME):
 models/$(VAD_NAME):
 	@mkdir -p models
 	curl -L --progress-bar -o $@ $(VAD_URL)
+
+# Optional. Groups the `them` track by voice, so Claude gets a hint about who
+# is who. It costs a 49 MB virtual environment, 28 MB of models, and about
+# seven minutes of processing per hour of audio, so it is not part of `all`.
+SEG_URL  ?= https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+EMB_URL  ?= https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_CAM++.onnx
+
+diarize: .venv/bin/python models/segmentation.onnx models/embedding.onnx
+	@echo ""
+	@echo "  voice grouping is ready. turn it on in your settings file:"
+	@echo ""
+	@echo "    diarize = yes"
+	@echo ""
+
+.venv/bin/python:
+	python3 -m venv .venv
+	./.venv/bin/pip install -q --upgrade pip
+	./.venv/bin/pip install -q sherpa-onnx numpy
+
+models/segmentation.onnx:
+	@mkdir -p models
+	curl -L --progress-bar -o models/seg.tar.bz2 $(SEG_URL)
+	tar xjf models/seg.tar.bz2 -C models
+	mv models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx $@
+	rm -rf models/seg.tar.bz2 models/sherpa-onnx-pyannote-segmentation-3-0
+
+models/embedding.onnx:
+	@mkdir -p models
+	curl -L --progress-bar -o $@ $(EMB_URL)
 
 test:
 	@test/run.sh

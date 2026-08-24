@@ -14,14 +14,46 @@ import sys
 
 TRACKS = (("them", "Them"), ("me", "Me"))
 
+# Voice groups from diarize.py, when it ran. `Them A` and `Them B` are a hint
+# for Claude, never an identity — see the module docstring in diarize.py.
+SPEAKERS_FILE = "speakers.json"
+
 # One speaker talking for two minutes is one turn to whisper and a wall of text
 # to a reader. A pause this long is where a paragraph should break.
 TURN_BREAK_MS = 8_000
 
 
+def read_voices(recording_dir: pathlib.Path) -> list[tuple[int, int, str]]:
+    """Voice groups from diarize.py. Empty when it never ran."""
+    path = recording_dir / SPEAKERS_FILE
+    if not path.exists():
+        return []
+    try:
+        rows = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    return [(int(row["start_ms"]), int(row["end_ms"]), str(row["speaker"]))
+            for row in rows if {"start_ms", "end_ms", "speaker"} <= set(row)]
+
+
+def voice_at(voices: list[tuple[int, int, str]], start: int, end: int) -> str | None:
+    """The voice group that overlaps this line the most, if any does.
+
+    Overlap, not the nearest start: whisper's segment boundaries and the
+    segmenter's are drawn by different models and never line up exactly.
+    """
+    best, longest = None, 0
+    for voice_start, voice_end, speaker in voices:
+        overlap = min(end, voice_end) - max(start, voice_start)
+        if overlap > longest:
+            best, longest = speaker, overlap
+    return best
+
+
 def read_segments(recording_dir: pathlib.Path) -> list[tuple[int, int, str, str]]:
     """Every segment from both tracks, as (start_ms, end_ms, speaker, text)."""
     segments: list[tuple[int, int, str, str]] = []
+    voices = read_voices(recording_dir)
     for track, speaker in TRACKS:
         path = recording_dir / f"{track}.json"
         if not path.exists():
@@ -31,7 +63,14 @@ def read_segments(recording_dir: pathlib.Path) -> list[tuple[int, int, str, str]
             text = segment.get("text", "").strip()
             if text:
                 offsets = segment["offsets"]
-                segments.append((offsets["from"], offsets["to"], speaker, text))
+                start, end = offsets["from"], offsets["to"]
+                label = speaker
+                # Only the mixed track needs grouping. `Me` is its own file.
+                if track == "them" and voices:
+                    found = voice_at(voices, start, end)
+                    if found is not None:
+                        label = f"{speaker} {found}"
+                segments.append((start, end, label, text))
     return segments
 
 

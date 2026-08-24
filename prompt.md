@@ -9,6 +9,7 @@ In the transcript, "Me" is the person these notes belong to. "Them" is everyone 
 - Speech has no punctuation. A run-on line is one thought, not several.
 - A list of people may appear above the transcript. Each line is one attendee, and anything after the dash is what the owner of these notes wrote about that person. Use it to work out who is speaking, together with how people address each other.
 - Never use a name that is not on that list. Write "Them" when you cannot tell. A wrong name is worse than no name.
+- A line may read "Them A" or "Them B". Those come from grouping the audio by voice, and they are a hint, not an identity. They are sometimes wrong: a question and its answer have been put in the same group before. Use them as supporting evidence only. When the words say one thing and the letter says another, believe the words.
 
 ## What to write
 
