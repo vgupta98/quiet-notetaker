@@ -11,6 +11,7 @@
 #   qn index                                  rebuild the search index
 #   qn vocab                                  show the words it has learned
 #   qn people                                 show who you meet, and add notes
+#   qn confirm <id> <letter> <name>           say who a voice really was
 #   qn prune [--older-than 30d]               delete old audio, keep the notes
 #   qn doctor                                 check the setup
 set -euo pipefail
@@ -275,6 +276,66 @@ transcribe_track() {
 
 # ------------------------------------------------------------------ writing
 
+# Claude's guess at which letter is which person, and yours when you have said.
+# A guess is recorded as a guess. Only `qn confirm` writes (confirmed), because
+# only you were actually in the room.
+speaker_map() {
+  local work="$1"
+  python3 - "$work" <<'PYEOF'
+import json, os, re, sys
+
+work = sys.argv[1]
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        return ""
+
+# Anything you confirmed outranks anything Claude guessed.
+confirmed = {}
+for line in read(os.path.join(work, "confirmed.txt")).splitlines():
+    letter, _, name = line.partition("=")
+    if _ and letter.strip() and name.strip():
+        confirmed[letter.strip().upper()] = name.strip()
+
+guesses = {}
+body = read(os.path.join(work, "summary.md"))
+section = re.search(r"^##[ \t]+Speakers[ \t]*$(?P<body>.*?)(?=^##[ \t]|\Z)",
+                    body, re.MULTILINE | re.DOTALL)
+if section is not None:
+    for line in section.group("body").splitlines():
+        found = re.match(r"^[-*\s]*(?P<letter>[A-Z])[ \t]*:[ \t]*(?P<name>\S.*?)\s*$", line)
+        if found and found.group("name").lower() not in ("unknown", "none"):
+            guesses[found.group("letter")] = found.group("name")
+
+entries = []
+for letter in sorted(set(confirmed) | set(guesses)):
+    if letter in confirmed:
+        entries.append(f"{letter}: {confirmed[letter]} (confirmed)")
+    else:
+        entries.append(f"{letter}: {guesses[letter]} (guess)")
+# json.dumps escapes anything that would break the frontmatter line.
+print("[" + ", ".join(json.dumps(entry) for entry in entries) + "]")
+PYEOF
+}
+
+# Claude is told to emit a Speakers section. It belongs in the frontmatter, so
+# it is lifted out of the body rather than shown twice.
+strip_speakers() {
+  python3 - "$1" <<'PYEOF'
+import re, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        text = handle.read()
+except OSError:
+    raise SystemExit(0)
+print(re.sub(r"^##[ \t]+Speakers[ \t]*$.*?(?=^##[ \t]|\Z)", "",
+             text, flags=re.MULTILINE | re.DOTALL).rstrip() + "\n", end="")
+PYEOF
+}
+
 write_note() {
   local work="$1" note="$2" title="$3" when="$4" people="$5" sharing="$6"
   local capture="$7" warnings="$8"
@@ -288,6 +349,9 @@ write_note() {
     printf 'sharing: %s\n' "$sharing"
     printf 'capture: %s\n' "$capture"
     printf 'warnings: %s\n' "$warnings"
+    local voices
+    voices="$(speaker_map "$work")"
+    if [ "$voices" != "[]" ]; then printf 'speaker_map: %s\n' "$voices"; fi
     printf -- '---\n\n'
 
     printf '# %s\n\n_%s_' "$title" "$when"
@@ -295,7 +359,7 @@ write_note() {
     printf '\n\n'
 
     if [ -s "$work/summary.md" ]; then
-      cat "$work/summary.md"
+      strip_speakers "$work/summary.md"
     else
       printf '_Kept on this Mac. Claude has not seen this meeting._\n\n'
       printf '_Run `qn approve %s` to have the notes written._\n' "$(basename "$work")"
@@ -682,6 +746,70 @@ cmd_prune() {
   if [ "$held" -gt 0 ]; then step "$held still awaiting approval, left alone"; fi
 }
 
+# You were in the room. Nothing else here can say that, so a confirmation
+# outranks every guess and is the only thing allowed to put a name on a line.
+cmd_confirm() {
+  local id="$1" letter="$2" name="$3" work note
+  work="$(resolve_recording "$id")"
+  id="$(basename "$work")"
+  note="$NOTES_DIR/$id.md"
+
+  letter="$(printf '%s' "$letter" | tr '[:lower:]' '[:upper:]')"
+  case "$letter" in
+    [A-Z]) ;;
+    *) die "the voice is a single letter, like: qn confirm $id A \"Marco\"" ;;
+  esac
+  # A newline here would end the frontmatter line early, and a name is typed
+  # by a person but pasted from anywhere.
+  name="$(printf '%s' "$name" | tr -d '\n\r\t' | sed 's/^ *//; s/ *$//')"
+  [ -n "$name" ] || die "give a name: qn confirm $id $letter \"Marco\""
+
+  if [ ! -s "$work/transcript.txt" ]; then
+    die "$id has no transcript yet"
+  fi
+  # speakers.json is the list of voices, not the transcript. Once you confirm
+  # A the transcript says "Marco:", and checking there would refuse to let you
+  # correct your own answer.
+  local voices
+  voices="$(python3 -c '
+import json, sys
+try:
+    rows = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+print(" ".join(sorted({str(r.get("speaker","")) for r in rows if r.get("speaker")})))
+' "$work/speakers.json" 2>/dev/null || true)"
+  if [ -z "$voices" ]; then
+    die "$id has no voice groups — record with 'diarize = yes' to get them"
+  fi
+  case " $voices " in
+    *" $letter "*) ;;
+    *) warn "no voice $letter in $id — it has: $voices"
+       die "nothing to confirm" ;;
+  esac
+
+  # Kept beside the audio, so `qn redo` applies it again instead of losing it.
+  touch "$work/confirmed.txt"
+  grep -v "^$letter=" "$work/confirmed.txt" > "$work/confirmed.new" 2>/dev/null || true
+  printf '%s=%s\n' "$letter" "$name" >> "$work/confirmed.new"
+  mv "$work/confirmed.new" "$work/confirmed.txt"
+
+  python3 "$HERE/lib/merge.py" "$work" > "$work/transcript.new" \
+    && mv "$work/transcript.new" "$work/transcript.txt"
+
+  if [ -f "$note" ]; then
+    write_note "$work" "$note" "$(title_from_id "$id")" "$(when_from_id "$id")" \
+               "$(cat "$work/attendees.txt" 2>/dev/null || true)" \
+               "$(read_consent "$work")" \
+               "$(sed -n 's/^capture: *//p' "$note" | head -1)" \
+               "$(sed -n 's/^warnings: *//p' "$note" | head -1)"
+    refresh_index_quietly
+  fi
+
+  step "Them $letter is $name, in $id"
+  step "run 'qn redo $id' to rewrite the notes with that name"
+}
+
 cmd_people() {
   python3 "$HERE/lib/people.py" "$NOTES_DIR" >/dev/null
   printf '\n'
@@ -779,6 +907,9 @@ case "${1:-}:$#" in
   index:1)          cmd_index; exit $? ;;
   vocab:1)          cmd_vocab; exit $? ;;
   people:1)         cmd_people; exit $? ;;
+  confirm:4)        cmd_confirm "$2" "$3" "$4"; exit $? ;;
+  confirm:1|confirm:2|confirm:3)
+                    die "usage: qn confirm <id> <letter> <name>" ;;
   prune:1)          cmd_prune "$keep_days"; exit $? ;;
   doctor:1)         cmd_doctor; exit $? ;;
   redo:2)           cmd_redo "$2" "$attendees"; exit $? ;;

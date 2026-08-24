@@ -101,6 +101,7 @@ qn watch                        auto-record detected meetings
 qn index                        rebuild ~/Meetings/.index.db
 qn vocab                        rebuild and show the learned vocabulary
 qn people                       rebuild and show the roster of who you meet
+qn confirm <id> <letter> <name> say who a voice group really was
 qn prune [--older-than 30d]     delete audio older than N days, keep the notes
 qn doctor                       check dependencies and permissions
 ```
@@ -188,6 +189,22 @@ a letter into a name automatically.
 
 A cluster under `MIN_SPEAKER_SECONDS` gets no letter, and its lines stay
 `Them`. At most `MAX_SPEAKERS` letters are handed out, busiest voice first.
+
+`qn confirm <id> <letter> <name>` records who a voice was, in
+`confirmed.txt` beside the audio as `A=Marco`. `merge.py` reads it and writes
+the name instead of the letter, so a `qn redo` keeps the answer. The letter is
+checked against `speakers.json`, not the transcript, so a confirmation can be
+corrected after it has already replaced the label.
+
+Every note carries what it knows:
+
+```yaml
+speaker_map: ["A: Marco (confirmed)", "B: Lena (guess)"]
+```
+
+`(guess)` comes from the `## Speakers` section Claude writes, which `qn` lifts
+out of the body into the frontmatter. `(confirmed)` comes from `qn confirm` and
+always outranks a guess. Only a confirmation names a transcript line.
 
 Everything is optional. Without `make diarize` the models are absent, the step
 is skipped, and the transcript is byte-identical to one produced without it.

@@ -18,6 +18,10 @@ TRACKS = (("them", "Them"), ("me", "Me"))
 # for Claude, never an identity — see the module docstring in diarize.py.
 SPEAKERS_FILE = "speakers.json"
 
+# What you said a voice really was. You were in the room, so this outranks
+# every guess, and it is the only thing that puts a name on a transcript line.
+CONFIRMED_FILE = "confirmed.txt"
+
 # One speaker talking for two minutes is one turn to whisper and a wall of text
 # to a reader. A pause this long is where a paragraph should break.
 TURN_BREAK_MS = 8_000
@@ -34,6 +38,24 @@ def read_voices(recording_dir: pathlib.Path) -> list[tuple[int, int, str]]:
         return []
     return [(int(row["start_ms"]), int(row["end_ms"]), str(row["speaker"]))
             for row in rows if {"start_ms", "end_ms", "speaker"} <= set(row)]
+
+
+def read_confirmed(recording_dir: pathlib.Path) -> dict[str, str]:
+    """`A=Marco` lines written by `qn confirm`. Empty when you never did."""
+    path = recording_dir / CONFIRMED_FILE
+    if not path.exists():
+        return {}
+    try:
+        text = path.read_text()
+    except OSError:
+        return {}
+    named: dict[str, str] = {}
+    for line in text.splitlines():
+        letter, marker, name = line.partition("=")
+        letter, name = letter.strip().upper(), name.strip()
+        if marker and len(letter) == 1 and letter.isalpha() and name:
+            named[letter] = name
+    return named
 
 
 def voice_at(voices: list[tuple[int, int, str]], start: int, end: int) -> str | None:
@@ -54,6 +76,7 @@ def read_segments(recording_dir: pathlib.Path) -> list[tuple[int, int, str, str]
     """Every segment from both tracks, as (start_ms, end_ms, speaker, text)."""
     segments: list[tuple[int, int, str, str]] = []
     voices = read_voices(recording_dir)
+    confirmed = read_confirmed(recording_dir)
     for track, speaker in TRACKS:
         path = recording_dir / f"{track}.json"
         if not path.exists():
@@ -69,7 +92,9 @@ def read_segments(recording_dir: pathlib.Path) -> list[tuple[int, int, str, str]
                 if track == "them" and voices:
                     found = voice_at(voices, start, end)
                     if found is not None:
-                        label = f"{speaker} {found}"
+                        # A confirmed voice becomes the person. An unconfirmed
+                        # one stays a letter, which is a hint and says so.
+                        label = confirmed.get(found, f"{speaker} {found}")
                 segments.append((start, end, label, text))
     return segments
 

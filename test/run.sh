@@ -260,7 +260,7 @@ qn_has() {
 
 # SPEC.md, "CLI surface". Every one of these must exist. A rename is a broken
 # contract, so it fails here instead of quietly skipping the tests below.
-for sub in redo play index pending approve vocab people prune doctor; do
+for sub in redo play index pending approve vocab people prune confirm doctor; do
   if qn_has "$sub"; then
     pass "qn has the $sub subcommand"
   else
@@ -493,6 +493,106 @@ if qn_has prune; then
 else
   fail "qn prune" "no prune subcommand in qn"
 fi
+
+# --------------------------------------------------------------------------
+section "voice hints and qn confirm"
+# --------------------------------------------------------------------------
+# Them A / Them B is a hint. Only `qn confirm` turns one into a name, because
+# only the person who was in the room can say.
+guard_notes_dir
+
+VOICE_DIR="$TMPROOT/voices"
+VOICE_WORK="$VOICE_DIR/.recordings/2026-05-05-1100-planning"
+mkdir -p "$VOICE_WORK"
+printf 'full\n' > "$VOICE_WORK/consent"
+printf 'Marco, Lena\n' > "$VOICE_WORK/attendees.txt"
+printf 'audio' > "$VOICE_WORK/them.m4a"
+printf 'audio' > "$VOICE_WORK/me.m4a"
+cat > "$VOICE_WORK/them.json" <<'JSONEOF'
+{"transcription":[
+ {"offsets":{"from":0,"to":2000},"text":" shall I start the release"},
+ {"offsets":{"from":9000,"to":11000},"text":" yes go ahead"}]}
+JSONEOF
+cat > "$VOICE_WORK/speakers.json" <<'JSONEOF'
+[{"start_ms":0,"end_ms":3000,"speaker":"A"},
+ {"start_ms":8000,"end_ms":12000,"speaker":"B"}]
+JSONEOF
+python3 "$ROOT/lib/merge.py" "$VOICE_WORK" > "$VOICE_WORK/transcript.txt"
+assert_contains "$(cat "$VOICE_WORK/transcript.txt")" "Them A:" "the transcript carries a voice hint"
+assert_contains "$(cat "$VOICE_WORK/transcript.txt")" "Them B:" "each voice gets its own letter"
+
+voice_qn() { # voice_qn <outfile> <args...>
+  local out="$1"; shift
+  capture 30 "$out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$VOICE_DIR" \
+    QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
+    /bin/bash "$QN" "$@"
+}
+
+# A letter nobody spoke must be refused, and must say which letters exist.
+voice_qn "$TMPROOT/confirm-bad.out" confirm "2026-05-05-1100-planning" Z "Nobody"
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "confirming a voice that is not there fails" "it exited 0"
+else
+  pass "confirming a voice that is not there fails"
+fi
+assert_contains "$(cat "$TMPROOT/confirm-bad.out")" "it has: A B" "the refusal lists the voices it does have"
+
+# Not a letter at all.
+voice_qn "$TMPROOT/confirm-num.out" confirm "2026-05-05-1100-planning" 1 "Marco"
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "a voice must be a single letter" "it exited 0"
+else
+  pass "a voice must be a single letter"
+fi
+
+# The real thing.
+voice_qn "$TMPROOT/confirm.out" confirm "2026-05-05-1100-planning" a "Marco"
+assert_eq "0" "$CAPTURE_CODE" "qn confirm exits 0"
+assert_contains "$(cat "$VOICE_WORK/transcript.txt")" "Marco:" "a confirmed voice becomes the person"
+assert_missing "$(cat "$VOICE_WORK/transcript.txt")" "Them A:" "the letter is gone once you have said who it was"
+assert_contains "$(cat "$VOICE_WORK/transcript.txt")" "Them B:" "an unconfirmed voice keeps its letter"
+assert_eq "A=Marco" "$(cat "$VOICE_WORK/confirmed.txt")" "the answer is kept beside the audio"
+
+# A redo re-runs merge.py, so the answer has to survive it.
+voice_qn "$TMPROOT/confirm-redo.out" redo "2026-05-05-1100-planning"
+assert_eq "0" "$CAPTURE_CODE" "qn redo exits 0 after a confirmation"
+assert_contains "$(cat "$VOICE_WORK/transcript.txt")" "Marco:" "a confirmation survives qn redo"
+
+# And it reaches the note's frontmatter, marked as confirmed rather than guessed.
+voice_note="$VOICE_DIR/2026-05-05-1100-planning.md"
+assert_file "$voice_note" "qn redo writes the note"
+assert_contains "$(cat "$voice_note")" "speaker_map:" "the note records who each voice was"
+assert_contains "$(cat "$voice_note")" "A: Marco (confirmed)" "your answer is recorded as confirmed"
+
+# Claude's own guess is recorded too, and marked as a guess.
+cat > "$VOICE_WORK/summary.md" <<'SUMEOF'
+## Summary
+- planned the release.
+
+## Decisions
+- None
+
+## My action items
+- None
+
+## Their action items
+- None
+
+## Open questions
+- None
+
+## Speakers
+- A: Marco
+- B: Lena
+SUMEOF
+# Correcting an answer must work, so this must not check the transcript for a
+# letter that a previous confirmation already replaced.
+voice_qn "$TMPROOT/confirm-guess.out" confirm "2026-05-05-1100-planning" A "Marco"
+assert_eq "0" "$CAPTURE_CODE" "a voice can be confirmed again, to correct it"
+guess_note="$(cat "$voice_note")"
+assert_contains "$guess_note" "B: Lena (guess)" "Claude's guess is recorded as a guess"
+assert_contains "$guess_note" "A: Marco (confirmed)" "your answer outranks Claude's guess"
+assert_missing "$guess_note" "## Speakers" "the speakers section is lifted out of the note body"
 
 # --------------------------------------------------------------------------
 section "a watch whose script changed under it"

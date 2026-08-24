@@ -191,6 +191,27 @@ disagree, so a bad group can be overruled. An automatic name could not be.
 It costs about seven minutes of processing per hour of audio, on top of the
 transcript. That is why it is off by default.
 
+### Saying who a voice was
+
+You were in the room. Nothing else here can say that:
+
+```sh
+qn confirm 2026-08-24-1500-sdk-standup A "Marco"
+```
+
+From then on that voice is **Marco** in the transcript, not `Them A`. Your
+answer is kept beside the audio, so `qn redo` never loses it, and you can
+correct it by confirming the same letter again.
+
+Every note records what it knows in its frontmatter:
+
+```yaml
+speaker_map: ["A: Marco (confirmed)", "B: Lena (guess)"]
+```
+
+`(guess)` is Claude reading the conversation. `(confirmed)` is you. Only a
+confirmation puts a name on a transcript line.
+
 ## How it works
 
 Your Mac records two tracks: everything the meeting app plays (`them.m4a`) and

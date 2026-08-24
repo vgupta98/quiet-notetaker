@@ -13,7 +13,7 @@ In the transcript, "Me" is the person these notes belong to. "Them" is everyone 
 
 ## What to write
 
-Use exactly this structure, in markdown. Keep every heading, even when a section is empty — write "None" under it instead of dropping it.
+Use exactly this structure, in markdown. Keep every heading, even when a section is empty — write "None" under it instead of dropping it. The last heading, Speakers, is the one exception: leave it out entirely when the transcript has no "Them A" labels.
 
 ## Summary
 Three to five bullets. What the meeting was about, and what came out of it.
@@ -30,9 +30,12 @@ One markdown checkbox per thing someone else agreed to do. Name the person when 
 ## Open questions
 Bullets. Things that were raised and never answered.
 
+## Speakers
+Only when the transcript uses "Them A", "Them B" labels. One line per label, as `A: Name`. Use a name from the people list, or write `A: unknown` when you cannot tell. This is your best guess from what was said, and it is recorded as a guess.
+
 ## Rules
 
 - Use only what is in the transcript. Never invent a name, date, number, or commitment.
 - Ignore fragments that carry no meaning.
-- Write nothing outside the five headings above. No title, no preamble, no closing remark.
+- Write nothing outside the headings above. No title, no preamble, no closing remark.
 - Be short. The whole thing should take under a minute to read.

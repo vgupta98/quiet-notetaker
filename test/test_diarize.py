@@ -137,5 +137,66 @@ class MergeReadsTheHint(unittest.TestCase):
         self.assertEqual([turn[1] for turn in turns], ["Them A", "Them B"])
 
 
+class Confirmations(unittest.TestCase):
+    """`qn confirm` is the only thing allowed to put a name on a line."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="qn-confirm-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.path = pathlib.Path(self.dir)
+        rows = [{"offsets": {"from": 0, "to": 2000}, "text": "shall I start"},
+                {"offsets": {"from": 9000, "to": 11_000}, "text": "yes go ahead"}]
+        (self.path / "them.json").write_text(json.dumps({"transcription": rows}))
+        (self.path / "speakers.json").write_text(json.dumps(
+            [{"start_ms": 0, "end_ms": 3000, "speaker": "A"},
+             {"start_ms": 8000, "end_ms": 12_000, "speaker": "B"}]))
+
+    def confirm(self, text):
+        (self.path / "confirmed.txt").write_text(text)
+
+    def test_without_a_confirmation_the_letter_stays(self):
+        self.assertEqual([row[2] for row in merge.read_segments(self.path)],
+                         ["Them A", "Them B"])
+
+    def test_a_confirmed_voice_becomes_the_person(self):
+        self.confirm("A=Marco\n")
+        self.assertEqual([row[2] for row in merge.read_segments(self.path)],
+                         ["Marco", "Them B"])
+
+    def test_each_voice_is_confirmed_on_its_own(self):
+        self.confirm("A=Marco\nB=Lena\n")
+        self.assertEqual([row[2] for row in merge.read_segments(self.path)],
+                         ["Marco", "Lena"])
+
+    def test_the_letter_is_read_case_insensitively(self):
+        self.confirm("a=Marco\n")
+        self.assertEqual(merge.read_confirmed(self.path), {"A": "Marco"})
+
+    def test_a_blank_name_confirms_nothing(self):
+        self.confirm("A=\n")
+        self.assertEqual(merge.read_confirmed(self.path), {})
+
+    def test_a_junk_line_is_skipped_without_losing_the_good_ones(self):
+        self.confirm("not a mapping\nA=Marco\n")
+        self.assertEqual(merge.read_confirmed(self.path), {"A": "Marco"})
+
+    def test_a_multi_letter_key_is_refused(self):
+        """Only the letters diarize.py hands out can be confirmed."""
+        self.confirm("AB=Marco\n")
+        self.assertEqual(merge.read_confirmed(self.path), {})
+
+    def test_no_file_means_no_confirmations(self):
+        self.assertEqual(merge.read_confirmed(self.path), {})
+
+    def test_a_confirmed_name_survives_being_rebuilt(self):
+        """`qn redo` re-runs merge.py, so the file beside the audio is what
+        keeps your answer from being thrown away."""
+        self.confirm("A=Marco\n")
+        first = merge.format_turns(merge.build_turns(merge.read_segments(self.path)))
+        second = merge.format_turns(merge.build_turns(merge.read_segments(self.path)))
+        self.assertEqual(first, second)
+        self.assertIn("Marco:", first)
+
+
 if __name__ == "__main__":
     unittest.main()
