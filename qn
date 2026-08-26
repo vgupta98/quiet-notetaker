@@ -73,6 +73,7 @@ WATCHER="${QN_WATCHER:-$HERE/build/watcher}"
 PROMPT="$HERE/prompt.md"
 PLAY_WINDOW="$(setting "${QN_PLAY_WINDOW:-}" play_window 60)"
 MIC_SECONDS="${QN_MIC_SECONDS:-8}"
+CONSENT_WAIT="${QN_CONSENT_WAIT:-90}"
 PRUNE_DAYS="$(setting "${QN_PRUNE_DAYS:-}" prune_days 30)"
 
 # A bad number in the config file must fail here, with the file named, rather
@@ -85,6 +86,9 @@ case "$PLAY_WINDOW" in
 esac
 case "$MIC_SECONDS" in
   ""|*[!0-9]*) printf 'qn: QN_MIC_SECONDS must be a number of seconds, got %s\n' "$MIC_SECONDS" >&2; exit 1 ;;
+esac
+case "$CONSENT_WAIT" in
+  ""|*[!0-9]*) printf 'qn: QN_CONSENT_WAIT must be a number of seconds, got %s\n' "$CONSENT_WAIT" >&2; exit 1 ;;
 esac
 
 # Housekeeping after each recording. Off unless you ask for it: nobody's audio
@@ -190,6 +194,7 @@ ask_consent() {
   # decided your policy, and the only way to test this path without a human.
   if [ -n "${QN_CONSENT:-}" ]; then
     printf '%s\n' "$QN_CONSENT" > "$work/consent"
+    : > "$work/consent.answered"
     return 0
   fi
   (
@@ -220,16 +225,29 @@ OSA
       *"Do not record"*) printf 'none\n'  > "$work/consent" ;;
       *)                 printf 'local\n' > "$work/consent" ;;
     esac
+    # Written last, and only once an answer is in the file. `consent` itself
+    # is pre-seeded before recording starts, so it cannot say whether anyone
+    # has answered — only this can.
+    : > "$work/consent.answered"
   ) >/dev/null 2>&1 &
 }
 
 # Give a still-open dialog a moment to be answered. Silence means "hold it".
+#
+# It waits on `consent.answered`, not on `consent`. Watch mode writes `local`
+# into `consent` before the recorder captures a sample, so that a crash cannot
+# leave a shareable meeting. That also means `consent` is never empty, so the
+# older test on it returned at once and gave nobody the moment this exists to
+# give. The two guards are both right; only one of them can answer this
+# question.
 wait_for_consent() {
   local work="$1" waited=0
-  while [ ! -s "$work/consent" ] && [ "$waited" -lt 90 ]; do
+  while [ ! -e "$work/consent.answered" ] && [ "$waited" -lt "$CONSENT_WAIT" ]; do
     sleep 1
     waited=$((waited + 1))
   done
+  # Belt and braces: the pre-seed already holds `local`, and read_consent
+  # reads an empty file as `local` too. Neither is a reason to leave a gap.
   if [ ! -s "$work/consent" ]; then printf 'local\n' > "$work/consent"; fi
 }
 

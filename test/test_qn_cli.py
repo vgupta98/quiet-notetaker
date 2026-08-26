@@ -9,6 +9,8 @@ import pathlib
 import re
 import subprocess
 import tempfile
+import threading
+import time
 import os
 import sys
 
@@ -23,14 +25,15 @@ import unittest
 QN = pathlib.Path(ROOT) / "qn"
 
 
-def call_helper(name: str, *args: str) -> str:
+def call_helper(name: str, *args: str, env: dict | None = None) -> str:
     """Run one bash function out of `qn`, with nothing else loaded."""
     source = QN.read_text()
     match = re.search(rf"^{re.escape(name)}\(\) \{{.*?^\}}", source, re.S | re.M)
     if match is None:
         raise AssertionError(f"{name}() no longer exists in qn — update this test")
     script = f'{match.group(0)}\n{name} "$@"'
-    done = subprocess.run(["bash", "-c", script, "_", *args], capture_output=True, text=True)
+    done = subprocess.run(["bash", "-c", script, "_", *args], capture_output=True, text=True,
+                          env={**os.environ, **(env or {})})
     return done.stdout
 
 
@@ -153,6 +156,66 @@ class Dispatch(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run_qn("some meeting", notes=tmp)
             self.assertEqual(os.listdir(tmp), [])
+
+
+class ConsentWaitActuallyWaits(unittest.TestCase):
+    """The wait must survive the privacy fix that silently disabled it.
+
+    Watch mode writes `local` into `consent` before the recorder captures a
+    sample, so a crash cannot leave a shareable meeting. That guard is right,
+    and it made `consent` never empty — so a wait that tested `consent` for
+    emptiness returned at once and held meetings the user was still answering
+    for. These fail if anything reintroduces that coupling.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        # Exactly what cmd_watch writes before the first sample.
+        (self.dir / "consent").write_text("local\n")
+
+    def wait(self, seconds="3"):
+        """Run wait_for_consent, and report how long it took."""
+        started = time.monotonic()
+        call_helper("wait_for_consent", str(self.dir),
+                    env={"CONSENT_WAIT": seconds, "QN_CONSENT_WAIT": seconds})
+        return time.monotonic() - started
+
+    def consent(self):
+        return (self.dir / "consent").read_text().strip()
+
+    def test_an_answered_dialog_returns_at_once(self):
+        (self.dir / "consent.answered").touch()
+        self.assertLess(self.wait("3"), 1.5)
+
+    def test_an_unanswered_dialog_is_waited_for(self):
+        # The pre-seeded `local` must not be mistaken for an answer.
+        self.assertGreaterEqual(self.wait("2"), 1.5)
+        self.assertEqual(self.consent(), "local")
+
+    def test_an_answer_arriving_during_the_wait_is_honoured(self):
+        # The bug this fixes: the wait returned before the user had answered,
+        # so a meeting they agreed to send was held instead.
+        def answer_late():
+            time.sleep(1)
+            (self.dir / "consent").write_text("full\n")
+            (self.dir / "consent.answered").touch()
+
+        thread = threading.Thread(target=answer_late)
+        thread.start()
+        self.addCleanup(thread.join)
+        elapsed = self.wait("8")
+        self.assertGreaterEqual(elapsed, 0.9, "it did not wait for the answer")
+        self.assertLess(elapsed, 7, "it waited past the answer")
+        self.assertEqual(self.consent(), "full")
+
+    def test_the_marker_alone_never_makes_a_meeting_shareable(self):
+        # read_consent is the only reader of the decision, and it fails closed.
+        (self.dir / "consent").write_text("")
+        (self.dir / "consent.answered").touch()
+        self.wait("2")
+        self.assertEqual(self.consent(), "local")
 
 
 class MeetingIdsAreUnique(unittest.TestCase):

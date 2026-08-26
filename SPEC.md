@@ -10,6 +10,7 @@ Everything in this repo agrees on the shapes below. Change them here first.
   .recordings/2026-08-20-1535-sdk-sync/
       them.m4a  me.m4a  them.json  me.json  transcript.txt  summary.md
       consent                              one word: full | local | none
+      consent.answered                     present once a human has answered
   .index.db                                disposable. rebuilt by rescanning.
 ```
 
@@ -69,6 +70,12 @@ _20 Aug 2026, 15:35_ · _With: Priya, Arjun_
 | `warnings` | list of string | human-readable capture problems |
 
 A note with `sharing: local` has a transcript and **no** AI sections.
+
+`consent` is written with `local` before the recorder captures a sample, so a
+crash cannot leave a shareable meeting. That means its presence says nothing
+about whether anyone has answered, and `consent.answered` is what says so. A
+watch waits `QN_CONSENT_WAIT` seconds, default 90, for that marker after the
+meeting stops, and holds the meeting when it never appears.
 
 **Sharing fails closed, everywhere.** A note is indexed only when its
 frontmatter positively reads `sharing: full`. Missing, malformed, unknown,
