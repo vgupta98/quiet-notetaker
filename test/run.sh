@@ -386,6 +386,33 @@ if qn_has pending; then
   assert_eq "0" "$CAPTURE_CODE" "qn pending exits 0"
   assert_contains "$(cat "$TMPROOT/pending.out")" "$LOCAL_ID" "qn pending lists the meeting whose consent says local"
   assert_missing "$(cat "$TMPROOT/pending.out")" "$FULL_ID" "qn pending leaves out a meeting whose consent says full"
+
+  # What is waiting is what has no notes, not what you answered. A late "Full
+  # notes" click leaves a meeting with no notes and a consent that says full.
+  # Reading the consent alone hid it from this list and from everything else.
+  PEND_DIR="$TMPROOT/pending-cases"
+  mkdir -p "$PEND_DIR/.recordings"
+  for case in "answered-late full no" "properly-sent full yes" "held-normally local no" "recording-now full no"; do
+    pid="$(printf '%s' "$case" | cut -d' ' -f1)"
+    verdict="$(printf '%s' "$case" | cut -d' ' -f2)"
+    has_notes="$(printf '%s' "$case" | cut -d' ' -f3)"
+    pend_work="$PEND_DIR/.recordings/2026-09-09-0900-$pid"
+    mkdir -p "$pend_work"
+    printf '%s\n' "$verdict" > "$pend_work/consent"
+    if [ "$has_notes" = "yes" ]; then printf '## Summary\n- notes\n' > "$pend_work/summary.md"; fi
+  done
+  # The meeting being recorded right now is not waiting for anything.
+  printf '%s' "$PEND_DIR/.recordings/2026-09-09-0900-recording-now" > "$PEND_DIR/.recordings/.recording"
+
+  capture 30 "$TMPROOT/pending2.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$PEND_DIR" \
+    /bin/bash "$QN" pending
+  pending2="$(cat "$TMPROOT/pending2.out")"
+  assert_eq "0" "$CAPTURE_CODE" "qn pending exits 0 over the edge cases"
+  assert_contains "$pending2" "answered-late" "a late full answer with no notes is listed"
+  assert_contains "$pending2" "never sent" "and it says why it is listed"
+  assert_contains "$pending2" "held-normally" "a held meeting is still listed"
+  assert_missing "$pending2" "properly-sent" "a meeting that has notes is not listed"
+  assert_missing "$pending2" "recording-now" "the recording in progress is not listed"
 else
   fail "qn pending" "no pending subcommand in qn"
 fi

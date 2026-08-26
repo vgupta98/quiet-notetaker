@@ -71,6 +71,11 @@ _20 Aug 2026, 15:35_ · _With: Priya, Arjun_
 
 A note with `sharing: local` has a transcript and **no** AI sections.
 
+`qn pending` lists a recording that has no `summary.md`, whatever its consent
+says, and skips the recording in progress. Asking the consent instead hid a
+meeting completely: a `full` answer that arrives after the watch stopped
+waiting leaves no notes and a consent that reads `full`.
+
 `consent` is written with `local` before the recorder captures a sample, so a
 crash cannot leave a shareable meeting. That means its presence says nothing
 about whether anyone has answered, and `consent.answered` is what says so. A
@@ -104,7 +109,7 @@ qn redo <id|dir>                rebuild notes from an existing recording
 qn --notes-only redo <id>       rebuild the notes, reusing the transcript
 qn play <id> [MM:SS]            play the audio from a timestamp
 qn approve <id>                 send a held (local) meeting to Claude
-qn pending                      list meetings awaiting approval
+qn pending                      list meetings that have no notes yet
 qn watch                        auto-record detected meetings
 qn index                        rebuild ~/Meetings/.index.db
 qn vocab                        rebuild and show the learned vocabulary

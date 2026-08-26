@@ -708,13 +708,29 @@ cmd_approve() {
   cmd_redo "$work"
 }
 
+# What is waiting is what has no notes yet. That is not the same question as
+# what you answered, and asking the answer hid a meeting entirely: a "Full
+# notes" click that lands after the watch stopped waiting leaves a meeting
+# with no notes and a consent file that says full, so the old test skipped it
+# and nothing else ever mentioned it again.
 cmd_pending() {
-  local found=0 dir
+  local found=0 dir work active=""
+  if [ -s "$REC_DIR/.recording" ]; then active="$(cat "$REC_DIR/.recording")"; fi
+
   for dir in "$REC_DIR"/*/; do
-    if [ -d "$dir" ] && [ "$(read_consent "${dir%/}")" != "full" ]; then
-      printf '  %s\n' "$(basename "${dir%/}")"
-      found=1
+    if [ ! -d "$dir" ]; then continue; fi
+    work="${dir%/}"
+    # The meeting happening right now is not waiting for anything.
+    if [ "$work" = "$active" ]; then continue; fi
+    # Claude wrote notes, so nothing is owed.
+    if [ -s "$work/summary.md" ]; then continue; fi
+
+    if [ "$(read_consent "$work")" = "full" ]; then
+      printf '  %s  \033[2m(you answered full — it was never sent)\033[0m\n' "$(basename "$work")"
+    else
+      printf '  %s\n' "$(basename "$work")"
     fi
+    found=1
   done
   if [ "$found" -eq 0 ]; then step "nothing waiting"; fi
 }
