@@ -15,6 +15,7 @@
 #   qn confirm <id> <letter> <name>           say who a voice really was
 #   qn prune [--older-than 30d]               delete old audio, keep the notes
 #   qn doctor                                 check the setup
+#   qn doctor --mic                           record a few seconds and listen
 set -euo pipefail
 
 # `qn` is meant to be symlinked onto your PATH, so it has to find the repo it
@@ -71,6 +72,7 @@ RECORDER="${QN_RECORDER:-$HERE/build/recorder}"
 WATCHER="${QN_WATCHER:-$HERE/build/watcher}"
 PROMPT="$HERE/prompt.md"
 PLAY_WINDOW="$(setting "${QN_PLAY_WINDOW:-}" play_window 60)"
+MIC_SECONDS="${QN_MIC_SECONDS:-8}"
 PRUNE_DAYS="$(setting "${QN_PRUNE_DAYS:-}" prune_days 30)"
 
 # A bad number in the config file must fail here, with the file named, rather
@@ -80,6 +82,9 @@ case "$PRUNE_DAYS" in
 esac
 case "$PLAY_WINDOW" in
   ""|*[!0-9]*) printf 'qn: play_window must be a number of seconds, got %s\n' "$PLAY_WINDOW" >&2; exit 1 ;;
+esac
+case "$MIC_SECONDS" in
+  ""|*[!0-9]*) printf 'qn: QN_MIC_SECONDS must be a number of seconds, got %s\n' "$MIC_SECONDS" >&2; exit 1 ;;
 esac
 
 # Housekeeping after each recording. Off unless you ask for it: nobody's audio
@@ -946,6 +951,47 @@ cmd_index() {
   step "indexed $NOTES_DIR"
 }
 
+# `qn doctor` proves the dependencies are installed and the permissions are
+# granted. It cannot prove the microphone carries any sound, and an hour of
+# silence is the worst failure this tool has. So this records a few seconds
+# and measures them, which is the only way to know before the meeting.
+#
+# It is not part of a plain `qn doctor` because that runs during `make
+# install`, before any permission has been granted, and because a check that
+# records you should be asked for.
+cmd_mic_test() {
+  [ -x "$RECORDER" ] || die "the recorder is not built — run: make build"
+  [ -f "$HERE/lib/health.py" ] || die "$HERE/lib/health.py is missing"
+
+  local scratch status=0 pid verdict message
+  scratch="$(mktemp -d -t qnmic)"
+
+  printf '\n'
+  step "recording $MIC_SECONDS seconds — say something"
+  "$RECORDER" "$scratch" >/dev/null 2>&1 &
+  pid=$!
+  sleep "$MIC_SECONDS"
+  # SIGTERM, not SIGINT: a background job in a non-interactive shell starts
+  # with SIGINT ignored, and an ignored signal cannot be trapped.
+  kill -TERM "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  printf '\n'
+
+  # Process substitution, not a pipe: a pipe runs the loop in a subshell and
+  # the exit status set inside it would be thrown away.
+  while IFS="$(printf '\t')" read -r verdict message; do
+    case "$verdict" in
+      ok)   printf '  \033[32m✓\033[0m %s\n' "$message" ;;
+      warn) printf '  \033[33m!\033[0m %s\n' "$message" ;;
+      *)    printf '  \033[31m✗\033[0m %s\n' "$message"; status=1 ;;
+    esac
+  done < <(python3 "$HERE/lib/health.py" "$scratch" --advise)
+  printf '\n'
+
+  rm -rf "$scratch"
+  return $status
+}
+
 cmd_doctor() {
   local ok=0
   check() {
@@ -1046,6 +1092,15 @@ case "${1:-}:$#" in
                     die "usage: qn confirm <id> <letter> <name>" ;;
   prune:1)          cmd_prune "$keep_days"; exit $? ;;
   doctor:1)         cmd_doctor; exit $? ;;
+  doctor:2)
+    case "$2" in
+      --mic)
+        mic_status=0
+        cmd_doctor || mic_status=1
+        cmd_mic_test || mic_status=1
+        exit "$mic_status" ;;
+    esac
+    ;;
   redo:2)           cmd_redo "$2" "$attendees"; exit $? ;;
   approve:2)        cmd_approve "$2"; exit $? ;;
   play:2)           cmd_play "$2" "00:00"; exit $? ;;

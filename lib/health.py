@@ -125,6 +125,52 @@ def judge(measurements: dict[str, Measurement]) -> list[str]:
     return warnings
 
 
+def advise(report: dict) -> list[tuple[str, str]]:
+    """Read a health report as a microphone test rather than as a meeting.
+
+    The same numbers mean different things here. A meeting whose `them` track
+    is silent is broken. A microphone test whose `them` track is silent is
+    fine: nothing was playing. So `judge()` cannot answer this, and reusing it
+    would tell the user their setup is broken when it is working.
+
+    Returns (verdict, message) pairs, where verdict is ok, warn or fail.
+    """
+    tracks = report.get("tracks", {})
+    out: list[tuple[str, str]] = []
+
+    mic = tracks.get("me") or {}
+    if mic.get("seconds") is None:
+        out.append(("fail", "no microphone audio — grant Microphone access, then try again"))
+    elif mic.get("mean_db") is None:
+        out.append(("fail", "the microphone track was recorded but cannot be read"))
+    elif mic["mean_db"] < SILENT_MEAN_DB:
+        out.append(("fail", f"the microphone heard nothing ({mic['mean_db']:.0f} dB) — "
+                            "check it is not muted, and that the right input is selected"))
+    elif mic["mean_db"] < QUIET_MEAN_DB:
+        out.append(("warn", f"the microphone is very quiet ({mic['mean_db']:.0f} dB) — "
+                            "move closer, or raise the input level"))
+    elif mic.get("peak_db") is not None and mic["peak_db"] >= CLIPPING_PEAK_DB:
+        out.append(("warn", f"the microphone is clipping ({mic['peak_db']:.0f} dB peak) — "
+                            "lower the input level"))
+    else:
+        out.append(("ok", f"your microphone works ({mic['mean_db']:.0f} dB average)"))
+
+    system = tracks.get("them") or {}
+    if system.get("seconds") is None:
+        out.append(("fail", "no system audio — grant Screen Recording access, "
+                            "then quit and reopen the app you run qn from"))
+    elif system.get("mean_db") is None:
+        out.append(("fail", "the system audio track was recorded but cannot be read"))
+    elif system["mean_db"] < SILENT_MEAN_DB:
+        # The file exists and has length, so the capture itself worked.
+        out.append(("ok", "system audio is being captured — nothing was playing, "
+                          "so play something during the test to check it fully"))
+    else:
+        out.append(("ok", f"system audio works ({system['mean_db']:.0f} dB average)"))
+
+    return out
+
+
 def check(recording_dir: pathlib.Path) -> dict:
     """Full health report for one recording."""
     measurements = {track: measure(recording_dir / f"{track}.m4a") for track, _ in TRACKS}
@@ -141,5 +187,11 @@ def check(recording_dir: pathlib.Path) -> dict:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        sys.exit("usage: health.py <recording-dir>")
-    print(json.dumps(check(pathlib.Path(sys.argv[1]))))
+        sys.exit("usage: health.py <recording-dir> [--advise]")
+    _report = check(pathlib.Path(sys.argv[1]))
+    if "--advise" in sys.argv:
+        # One `verdict<TAB>message` per line, for `qn doctor --mic` to colour.
+        for _verdict, _message in advise(_report):
+            print(f"{_verdict}\t{_message}")
+    else:
+        print(json.dumps(_report))

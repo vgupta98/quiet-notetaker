@@ -15,7 +15,7 @@ for _path in (HERE, os.path.join(ROOT, "lib"), os.path.join(ROOT, "mcp")):
 
 import unittest
 
-from health import Measurement, _parse, judge
+from health import Measurement, _parse, advise, judge
 
 GOOD = """  Duration: 00:03:57.97, start: 0.044000, bitrate: 75 kb/s
 [Parsed_volumedetect_0 @ 0x7cec1ce40] mean_volume: -32.8 dB
@@ -87,6 +87,74 @@ class Judge(unittest.TestCase):
     def test_both_tracks_missing_reports_both(self):
         empty = Measurement(None, None, None)
         self.assertEqual(len(judge({"them": empty, "me": empty})), 2)
+
+
+def report(me=None, them=None):
+    """A health report shaped the way check() returns one."""
+    return {"tracks": {"me": me, "them": them}}
+
+
+def track(seconds=8.0, mean_db=-28.0, peak_db=-6.0):
+    return {"seconds": seconds, "mean_db": mean_db, "peak_db": peak_db}
+
+
+MISSING = {"seconds": None, "mean_db": None, "peak_db": None}
+
+
+class MicrophoneTestAdvice(unittest.TestCase):
+    """What `qn doctor --mic` tells the user.
+
+    A meeting whose `them` track is silent is broken. A microphone test whose
+    `them` track is silent is working — nothing was playing. These assert the
+    two are never confused, because saying "broken" to a working setup sends
+    people to fix a permission that was already granted.
+    """
+
+    def verdicts(self, **kwargs):
+        return [verdict for verdict, _ in advise(report(**kwargs))]
+
+    def messages(self, **kwargs):
+        return " ".join(message for _, message in advise(report(**kwargs)))
+
+    def test_a_working_microphone_passes(self):
+        self.assertEqual(self.verdicts(me=track(), them=track()), ["ok", "ok"])
+
+    def test_a_silent_system_track_is_not_a_failure(self):
+        # Nothing was playing. That is the normal case for a test.
+        verdicts = self.verdicts(me=track(), them=track(mean_db=-70.0))
+        self.assertEqual(verdicts, ["ok", "ok"])
+        self.assertIn("nothing was playing", self.messages(me=track(), them=track(mean_db=-70.0)))
+
+    def test_a_missing_microphone_names_the_permission(self):
+        self.assertEqual(self.verdicts(me=MISSING, them=track())[0], "fail")
+        self.assertIn("Microphone", self.messages(me=MISSING, them=track()))
+
+    def test_a_missing_system_track_names_the_permission(self):
+        self.assertEqual(self.verdicts(me=track(), them=MISSING)[1], "fail")
+        self.assertIn("Screen Recording", self.messages(me=track(), them=MISSING))
+
+    def test_a_silent_microphone_fails(self):
+        self.assertEqual(self.verdicts(me=track(mean_db=-70.0), them=track())[0], "fail")
+        self.assertIn("muted", self.messages(me=track(mean_db=-70.0), them=track()))
+
+    def test_a_quiet_microphone_warns_but_does_not_fail(self):
+        self.assertEqual(self.verdicts(me=track(mean_db=-45.0), them=track())[0], "warn")
+
+    def test_a_clipping_microphone_warns(self):
+        self.assertEqual(self.verdicts(me=track(peak_db=-0.1), them=track())[0], "warn")
+
+    def test_an_unreadable_microphone_track_fails(self):
+        broken = {"seconds": 8.0, "mean_db": None, "peak_db": None}
+        self.assertEqual(self.verdicts(me=broken, them=track())[0], "fail")
+
+    def test_a_missing_track_key_is_treated_as_absent(self):
+        # check() always supplies both keys, but advise() must not crash if a
+        # caller hands it less.
+        self.assertEqual(advise({"tracks": {}}), advise(report(me=None, them=None)))
+
+    def test_every_verdict_is_one_of_three_words(self):
+        for verdict, _ in advise(report(me=track(), them=track())):
+            self.assertIn(verdict, ("ok", "warn", "fail"))
 
 
 if __name__ == "__main__":

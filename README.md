@@ -74,6 +74,21 @@ to your vocabulary, or after you turn on voice grouping. A `qn confirm` needs
 no such thing, because the name is applied when the two tracks are stitched
 back together, which `--notes-only` still does.
 
+Before a meeting that matters, check the microphone actually carries sound:
+
+```sh
+qn doctor --mic          # records 8 seconds, then tells you what it heard
+```
+
+`qn doctor` proves the permissions are granted. Only this proves your voice is
+reaching the tool, which is the one failure that costs a whole meeting.
+
+```
+  ✓ your microphone works (-28 dB average)
+  ✓ system audio is being captured — nothing was playing, so play something
+    during the test to check it fully
+```
+
 Every recording is judged before transcription. A missing track, a silent
 track, a clipping mic, or one track stopping early is reported in the terminal
 and recorded in the note. The tool will not pretend a bad recording is a

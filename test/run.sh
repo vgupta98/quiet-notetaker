@@ -750,6 +750,53 @@ assert_eq "0" "$CAPTURE_CODE" "a recording with auto_prune on still exits 0"
 assert_eq "present" "$(held_audio old-held)" "auto_prune never deletes held audio, even with yes set"
 
 # --------------------------------------------------------------------------
+section "qn doctor --mic"
+# --------------------------------------------------------------------------
+# doctor proves the permissions are granted. Only this proves the microphone
+# carries sound, which is the one failure that costs a whole meeting.
+guard_notes_dir
+
+# A recorder stub that captures nothing, which is what a denied permission
+# looks like from here.
+MIC_RECORDER="$TMPROOT/mic-recorder"
+cat > "$MIC_RECORDER" <<'STUBEOF'
+#!/bin/bash
+exit 0
+STUBEOF
+chmod +x "$MIC_RECORDER"
+
+capture 40 "$TMPROOT/mic.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+  QN_RECORDER="$MIC_RECORDER" QN_MIC_SECONDS=1 \
+  /bin/bash "$QN" doctor --mic
+mic_out="$(cat "$TMPROOT/mic.out")"
+assert_contains "$mic_out" "recording 1 seconds" "the mic test says it is recording"
+assert_contains "$mic_out" "Microphone" "a captured-nothing run names the Microphone permission"
+assert_contains "$mic_out" "Screen Recording" "a captured-nothing run names the Screen Recording permission"
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "the mic test fails when nothing was captured" "it exited 0"
+else
+  pass "the mic test fails when nothing was captured"
+fi
+
+# It runs the ordinary doctor checks too, so one command answers everything.
+assert_contains "$mic_out" "notes:" "doctor --mic still reports the setup"
+
+# "qn doctor sync" is a meeting, not a broken flag.
+capture 20 "$TMPROOT/mic-title.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+  QN_DRY_RUN=1 /bin/bash "$QN" doctor sync
+assert_contains "$(cat "$TMPROOT/mic-title.out")" "id=" "a meeting called 'doctor sync' still records"
+
+# A bad duration must fail here, naming the variable.
+capture 20 "$TMPROOT/mic-bad.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+  QN_MIC_SECONDS=lots /bin/bash "$QN" doctor --mic
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "a bad QN_MIC_SECONDS is rejected" "it exited 0"
+else
+  pass "a bad QN_MIC_SECONDS is rejected"
+fi
+assert_contains "$(cat "$TMPROOT/mic-bad.out")" "QN_MIC_SECONDS" "the failure names the bad value"
+
+# --------------------------------------------------------------------------
 section "voice hints and qn confirm"
 # --------------------------------------------------------------------------
 # Them A / Them B is a hint. Only `qn confirm` turns one into a name, because

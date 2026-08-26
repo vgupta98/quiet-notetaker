@@ -105,6 +105,7 @@ qn people                       rebuild and show the roster of who you meet
 qn confirm <id> <letter> <name> say who a voice group really was
 qn prune [--older-than 30d]     delete audio older than N days, keep the notes
 qn doctor                       check dependencies and permissions
+qn doctor --mic                 record a few seconds and measure them
 ```
 
 A subcommand is recognised only when the argument count matches it, so a
@@ -247,6 +248,14 @@ shell's environment; the file is the only channel that reaches both sides.
 
 `qn` resolves its own symlinks before locating `models/`, `build/` and its
 helper scripts, so it works from any directory once linked onto `PATH`.
+
+`qn doctor --mic` records `QN_MIC_SECONDS` seconds, default 8, and reads the
+result with `health.advise()`. That is a separate judgement from `health.judge()`
+on purpose: a meeting with a silent `them` track is broken, and a microphone
+test with one is working, because nothing was playing. It is not part of a
+plain `qn doctor`, which runs during `make install` before any permission has
+been granted, and which must never record the user unasked. It exits non-zero
+on any `fail`.
 
 `qn doctor` also counts the notes on disk, how many are indexed, and how many
 are held. It calls `index.audit()`, which calls `parse_note()` — the same
