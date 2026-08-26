@@ -496,7 +496,10 @@ for w in json.load(sys.stdin)["warnings"]:
   fi
   # Always re-merged: this is where `qn confirm` puts a name on a line.
   python3 "$HERE/lib/merge.py" "$work" > "$work/transcript.txt"
-  if [ ! -s "$work/transcript.txt" ]; then
+  # Not `-s`: merge.py prints a newline even with nothing to merge, so a
+  # recording that captured no audio at all produced a one-byte file, passed
+  # this guard, and was sent to Claude to write notes about silence.
+  if [ -z "$(tr -d '[:space:]' < "$work/transcript.txt")" ]; then
     die "nothing was transcribed — the recording is still in $work"
   fi
 

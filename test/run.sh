@@ -824,6 +824,41 @@ fi
 assert_contains "$(cat "$TMPROOT/mic-bad.out")" "QN_MIC_SECONDS" "the failure names the bad value"
 
 # --------------------------------------------------------------------------
+section "a recording that captured nothing"
+# --------------------------------------------------------------------------
+# merge.py prints a newline even with nothing to merge. The emptiness guard
+# tested the file for bytes, so one newline passed it and Claude was asked to
+# write notes about a meeting that was never recorded.
+guard_notes_dir
+
+SILENT_DIR="$TMPROOT/captured-nothing"
+SILENT_ID="2026-03-03-0900-never-captured"
+SILENT_WORK="$SILENT_DIR/.recordings/$SILENT_ID"
+mkdir -p "$SILENT_WORK"
+printf 'full\n' > "$SILENT_WORK/consent"
+rm -f "$TMPROOT/silent-claude.log"
+capture 40 "$TMPROOT/silent.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$SILENT_DIR" \
+  QN_CLAUDE_LOG="$TMPROOT/silent-claude.log" \
+  QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
+  /bin/bash "$QN" redo "$SILENT_ID"
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "a recording that captured nothing is refused" "it exited 0"
+else
+  pass "a recording that captured nothing is refused"
+fi
+assert_contains "$(cat "$TMPROOT/silent.out")" "nothing was transcribed" "it says nothing was transcribed"
+if [ -e "$TMPROOT/silent-claude.log" ]; then
+  fail "claude is never asked to write notes about silence" "the stub logged a call"
+else
+  pass "claude is never asked to write notes about silence"
+fi
+if [ -e "$SILENT_DIR/$SILENT_ID.md" ]; then
+  fail "no note is written for a recording that captured nothing" "the note is there"
+else
+  pass "no note is written for a recording that captured nothing"
+fi
+
+# --------------------------------------------------------------------------
 section "voice hints and qn confirm"
 # --------------------------------------------------------------------------
 # Them A / Them B is a hint. Only `qn confirm` turns one into a name, because
