@@ -424,21 +424,36 @@ process_recording() {
   done
 
   local report capture warnings
-  report="$(python3 "$HERE/lib/health.py" "$work")"
-  capture="$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["capture"])')"
-  warnings="$(printf '%s' "$report" | python3 -c '
+  if [ -f "$work/.pruned" ] && [ -f "$note" ]; then
+    # The audio was pruned, so there is nothing left to measure. Re-measuring
+    # would report both tracks missing and call a good recording broken, so
+    # keep the verdict from when the audio was still here.
+    capture="$(sed -n 's/^capture: *//p' "$note" | head -1)"
+    warnings="$(sed -n 's/^warnings: *//p' "$note" | head -1)"
+    [ -n "$capture" ] || capture="ok"
+    [ -n "$warnings" ] || warnings="[]"
+  else
+    report="$(python3 "$HERE/lib/health.py" "$work")"
+    capture="$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["capture"])')"
+    warnings="$(printf '%s' "$report" | python3 -c '
 import json, sys
 found = json.load(sys.stdin)["warnings"]
 print("[" + ", ".join(json.dumps(w) for w in found) + "]")')"
 
-  if [ "$capture" = "warn" ]; then
-    printf '%s' "$report" | python3 -c '
+    if [ "$capture" = "warn" ]; then
+      printf '%s' "$report" | python3 -c '
 import json, sys
 for w in json.load(sys.stdin)["warnings"]:
     print("  \033[33mwarning: " + w + "\033[0m")' >&2
+    fi
   fi
 
-  if [ "$NOTES_ONLY" = "yes" ]; then
+  # Pruned audio leaves the words as the only record, so they are reused
+  # whether or not --notes-only was asked for.
+  local reuse_words="$NOTES_ONLY"
+  if [ -f "$work/.pruned" ]; then reuse_words=yes; fi
+
+  if [ "$reuse_words" = "yes" ]; then
     # The words do not change because prompt.md did. Reuse them, and rebuild
     # only what comes after, which is the part that actually changed.
     require_existing_words "$work"
@@ -649,8 +664,13 @@ cmd_redo() {
   local work people="" id
   work="$(resolve_recording "$1")"
   id="$(basename "$work")"
+  # Pruning deletes the audio and keeps the words, so a rebuild is still
+  # possible. Only a recording that was never transcribed is beyond help.
   if [ -f "$work/.pruned" ]; then
-    die "the audio for $id was pruned — the note still holds the full transcript"
+    if [ ! -s "$work/them.json" ] && [ ! -s "$work/me.json" ]; then
+      die "the audio for $id was pruned, and it was never transcribed"
+    fi
+    warn "the audio for $id was pruned — rebuilding from the words it kept"
   fi
   if [ -n "${2:-}" ]; then printf '%s\n' "$2" > "$work/attendees.txt"; fi
   if [ -s "$work/attendees.txt" ]; then people="$(cat "$work/attendees.txt")"; fi

@@ -154,9 +154,13 @@ Two recordings are never pruned:
 
   The recording in progress, named by `.recordings/.recording`.
 
-A pruned recording gets a `.pruned` marker. `qn redo` reads it and says the
-audio is gone, instead of failing inside whisper. `QN_DRY_RUN=1` reports what
-it would delete and deletes nothing.
+A pruned recording gets a `.pruned` marker. `qn redo` and `qn approve` read it,
+say the audio is gone, and rebuild from `them.json` and `me.json`, which
+pruning never touches. The capture verdict is copied from the existing note
+rather than measured again, because the audio it described no longer exists and
+`health.py` would report both tracks missing. A pruned recording that was never
+transcribed is refused, because nothing is left to rebuild from.
+`QN_DRY_RUN=1` reports what it would delete and deletes nothing.
 
 `auto_prune = yes` runs the same code after a recording, at most once a day.
 `.recordings/.last-prune` holds the date of the last automatic run, and is

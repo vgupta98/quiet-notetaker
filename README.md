@@ -290,6 +290,10 @@ It deletes the two `.m4a` files and nothing else. You keep the notes, the
 transcript, and the record of what you consented to. The only thing you lose is
 `qn play` — hearing the real voice.
 
+`qn approve` still works on a pruned meeting. It rebuilds from the words, which
+survive pruning, and keeps the capture verdict from the note rather than judging
+audio that is no longer there.
+
 It never prunes a meeting still waiting for your approval, or the one being
 recorded right now.
 

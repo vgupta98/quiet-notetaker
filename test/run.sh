@@ -587,6 +587,85 @@ fi
 assert_contains "$(cat "$TMPROOT/reuse-half.out")" "me track" "the refusal names the track that is missing"
 
 # --------------------------------------------------------------------------
+section "approving a meeting whose audio was pruned"
+# --------------------------------------------------------------------------
+# Pruning deletes the audio and keeps the words. Approval needs the words, so
+# a pruned meeting can still be sent, and must not be measured again: the
+# health check would report both tracks missing and call it broken.
+guard_notes_dir
+
+GONE_DIR="$TMPROOT/audio-gone"
+GONE_ID="2026-02-02-1400-held-then-pruned"
+GONE_WORK="$GONE_DIR/.recordings/$GONE_ID"
+mkdir -p "$GONE_WORK"
+printf 'local\n' > "$GONE_WORK/consent"
+printf 'Priya\n' > "$GONE_WORK/attendees.txt"
+cat > "$GONE_WORK/them.json" <<'JSONEOF'
+{"transcription":[{"offsets":{"from":1000,"to":4000},"text":" we agreed on the storage quota"}]}
+JSONEOF
+cat > "$GONE_WORK/me.json" <<'JSONEOF'
+{"transcription":[{"offsets":{"from":5000,"to":7000},"text":" I will raise the ticket"}]}
+JSONEOF
+date '+%Y-%m-%d' > "$GONE_WORK/.pruned"
+python3 "$ROOT/lib/merge.py" "$GONE_WORK" > "$GONE_WORK/transcript.txt"
+
+# The note as it stood while it was held, with a capture verdict worth keeping.
+cat > "$GONE_DIR/$GONE_ID.md" <<'NOTEEOF'
+---
+title: "held then pruned"
+date: 2026-02-02 14:00
+attendees: ["Priya"]
+sharing: local
+capture: ok
+warnings: []
+---
+
+# held then pruned
+
+_Kept on this Mac. Claude has not seen this meeting._
+NOTEEOF
+
+gone_qn() { # gone_qn <outfile> <args...>
+  local out="$1"; shift
+  rm -f "$WHISPER_LOG" "$TMPROOT/gone-claude.log"
+  capture 60 "$out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$GONE_DIR" \
+    QN_WHISPER_LOG="$WHISPER_LOG" QN_CLAUDE_LOG="$TMPROOT/gone-claude.log" \
+    QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
+    /bin/bash "$QN" "$@"
+}
+
+gone_qn "$TMPROOT/gone-approve.out" approve "$GONE_ID"
+assert_eq "0" "$CAPTURE_CODE" "qn approve works when the audio was pruned"
+assert_contains "$(cat "$TMPROOT/gone-approve.out")" "pruned" "approve says the audio is gone"
+assert_file "$TMPROOT/gone-claude.log" "approve still sends the meeting to claude"
+if [ -e "$WHISPER_LOG" ]; then
+  fail "approve never runs whisper on pruned audio" "the stub logged: $(cat "$WHISPER_LOG")"
+else
+  pass "approve never runs whisper on pruned audio"
+fi
+
+gone_note="$(cat "$GONE_DIR/$GONE_ID.md")"
+assert_contains "$gone_note" "sharing: full" "the approved note is shareable"
+assert_contains "$gone_note" "we agreed on the storage quota" "the words survive the missing audio"
+assert_contains "$gone_note" "capture: ok" "the capture verdict is kept, not measured again"
+assert_contains "$gone_note" "warnings: []" "the warnings are kept, not measured again"
+assert_missing "$gone_note" "track is missing" "a pruned recording is never called broken"
+
+# A pruned recording that was never transcribed has nothing left to rebuild.
+EMPTY_ID="2026-02-02-1500-nothing-left"
+EMPTY_WORK="$GONE_DIR/.recordings/$EMPTY_ID"
+mkdir -p "$EMPTY_WORK"
+printf 'local\n' > "$EMPTY_WORK/consent"
+date '+%Y-%m-%d' > "$EMPTY_WORK/.pruned"
+gone_qn "$TMPROOT/gone-empty.out" approve "$EMPTY_ID"
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "a pruned recording with no words is refused" "it exited 0"
+else
+  pass "a pruned recording with no words is refused"
+fi
+assert_contains "$(cat "$TMPROOT/gone-empty.out")" "never transcribed" "the refusal says why nothing can be done"
+
+# --------------------------------------------------------------------------
 section "voice hints and qn confirm"
 # --------------------------------------------------------------------------
 # Them A / Them B is a hint. Only `qn confirm` turns one into a name, because
