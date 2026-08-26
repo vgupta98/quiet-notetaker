@@ -294,8 +294,23 @@ transcript, and the record of what you consented to. The only thing you lose is
 survive pruning, and keeps the capture verdict from the note rather than judging
 audio that is no longer there.
 
-It never prunes a meeting still waiting for your approval, or the one being
-recorded right now.
+It never prunes the meeting being recorded right now.
+
+A meeting still waiting for your approval is kept unless you say otherwise.
+`qn prune` counts them, tells you what deleting their audio costs, and asks:
+
+```
+  2 meeting(s) awaiting approval have audio older than 30 days
+  deleting it is safe: 'qn approve' rebuilds them from the words it kept
+  you lose only 'qn play' — hearing the real voice
+
+  delete their audio too? [y/N]
+```
+
+Anything but `y` leaves them alone. A run with nobody to ask — a script, a
+scheduled job, `auto_prune` — always answers no. And a held meeting that was
+never transcribed keeps its audio whatever you say, because nothing would be
+left to approve.
 
 Searching does not grow either. `meetings_search` returns pointers and short
 snippets, never documents, so a question costs the same context whether you

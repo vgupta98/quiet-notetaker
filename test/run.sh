@@ -666,6 +666,86 @@ fi
 assert_contains "$(cat "$TMPROOT/gone-empty.out")" "never transcribed" "the refusal says why nothing can be done"
 
 # --------------------------------------------------------------------------
+section "prune asks before it deletes held audio"
+# --------------------------------------------------------------------------
+# A meeting awaiting approval can now be pruned, because approve rebuilds it
+# from the words. That is still the user's call, so prune asks first, and a
+# silent run always answers no.
+guard_notes_dir
+
+HELD_ROOT="$TMPROOT/held-prune"
+
+make_held_corpus() {
+  rm -rf "$HELD_ROOT"
+  mkdir -p "$HELD_ROOT/.recordings"
+  # id consent has-words
+  for spec in "old-held local yes" "old-held-2 local yes" "no-words local no" "old-full full yes"; do
+    local pid verdict words work
+    pid="$(printf '%s' "$spec" | cut -d' ' -f1)"
+    verdict="$(printf '%s' "$spec" | cut -d' ' -f2)"
+    words="$(printf '%s' "$spec" | cut -d' ' -f3)"
+    work="$HELD_ROOT/.recordings/2026-01-01-1000-$pid"
+    mkdir -p "$work"
+    printf '%s\n' "$verdict" > "$work/consent"
+    printf 'audio' > "$work/them.m4a"
+    printf 'audio' > "$work/me.m4a"
+    if [ "$words" = "yes" ]; then
+      printf '{"transcription":[{"offsets":{"from":0,"to":2000},"text":" a line"}]}\n' > "$work/them.json"
+    fi
+    touch -t 202001010000 "$work/them.m4a" "$work/me.m4a"
+  done
+}
+
+held_audio() { # held_audio <id>  -> present|gone
+  if [ -f "$HELD_ROOT/.recordings/2026-01-01-1000-$1/them.m4a" ]; then printf 'present'; else printf 'gone'; fi
+}
+
+prune_held() { # prune_held <outfile> [extra env...]
+  local out="$1"; shift
+  capture 30 "$out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$HELD_ROOT" "$@" \
+    /bin/bash "$QN" prune
+}
+
+# Answering yes deletes the held audio, and only where a rebuild is possible.
+make_held_corpus
+prune_held "$TMPROOT/held-yes.out" QN_ASSUME_YES=1
+assert_eq "0" "$CAPTURE_CODE" "prune exits 0 when the held audio is accepted"
+assert_eq "gone" "$(held_audio old-held)" "saying yes deletes a held meeting's audio"
+assert_eq "gone" "$(held_audio old-full)" "an approved meeting is pruned as before"
+assert_eq "present" "$(held_audio no-words)" "a held meeting with no words keeps its audio"
+
+# The pruned held meeting must still be approvable, which is the whole premise.
+assert_file "$HELD_ROOT/.recordings/2026-01-01-1000-old-held/.pruned" "the pruned held meeting is marked"
+assert_file "$HELD_ROOT/.recordings/2026-01-01-1000-old-held/them.json" "its words survive the prune"
+
+# No terminal to ask at means no. A cron job must never delete held audio.
+make_held_corpus
+prune_held "$TMPROOT/held-no.out"
+assert_eq "0" "$CAPTURE_CODE" "prune exits 0 when nobody can be asked"
+assert_eq "present" "$(held_audio old-held)" "a silent run leaves held audio alone"
+assert_eq "gone" "$(held_audio old-full)" "a silent run still prunes approved meetings"
+assert_contains "$(cat "$TMPROOT/held-no.out")" "awaiting approval, left alone" "it says what it left"
+
+# A dry run deletes nothing and asks nothing.
+make_held_corpus
+prune_held "$TMPROOT/held-dry.out" QN_DRY_RUN=1 QN_ASSUME_YES=1
+assert_eq "present" "$(held_audio old-held)" "a dry run deletes no held audio"
+assert_eq "present" "$(held_audio old-full)" "a dry run deletes no approved audio"
+assert_contains "$(cat "$TMPROOT/held-dry.out")" "would free" "a dry run still says what it would free"
+
+# auto_prune runs unattended after a meeting, so it must never take held audio.
+make_held_corpus
+printf 'auto_prune = yes\nprune_days = 30\n' > "$TMPROOT/held-auto-config"
+AUTO_WORK="$HELD_ROOT/.recordings/2026-01-01-1000-old-full"
+printf 'Priya\n' > "$AUTO_WORK/attendees.txt"
+capture 60 "$TMPROOT/held-auto.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$HELD_ROOT" \
+  QN_CONFIG="$TMPROOT/held-auto-config" QN_ASSUME_YES=1 \
+  QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
+  /bin/bash "$QN" redo "$AUTO_WORK"
+assert_eq "0" "$CAPTURE_CODE" "a recording with auto_prune on still exits 0"
+assert_eq "present" "$(held_audio old-held)" "auto_prune never deletes held audio, even with yes set"
+
+# --------------------------------------------------------------------------
 section "voice hints and qn confirm"
 # --------------------------------------------------------------------------
 # Them A / Them B is a hint. Only `qn confirm` turns one into a name, because

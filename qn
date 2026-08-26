@@ -733,28 +733,88 @@ cmd_play() {
   rm -rf "$clipdir"
 }
 
+# A held meeting keeps its audio because `qn approve` needs it. It no longer
+# does — approve rebuilds from the words, which pruning never deletes. So the
+# audio can go, but only if you say so, because the trade is yours to make:
+# you keep the meeting and lose the recorded voice.
+#
+# QN_ASSUME_YES answers for you, the way QN_CONSENT does for a recording, and
+# is how this path is tested without a human. Without a terminal to ask at,
+# the answer is no.
+ask_about_held() {
+  local count="$1" days="$2" answer=""
+  if [ -n "${QN_ASSUME_YES:-}" ]; then return 0; fi
+  if [ ! -t 0 ]; then return 1; fi
+
+  printf '\n' >&2
+  warn "$count meeting(s) awaiting approval have audio older than $days days"
+  step "deleting it is safe: 'qn approve' rebuilds them from the words it kept"
+  step "you lose only 'qn play' — hearing the real voice"
+  printf '\n  delete their audio too? [y/N] ' >&2
+  read -r answer || answer=""
+  printf '\n' >&2
+  case "$answer" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Audio is over 99% of everything this tool stores, and the note already holds
 # the full transcript. So pruning deletes the two .m4a files and nothing else.
 # The transcript, the summary and the consent record all stay.
 # mode is `manual` or `auto`. An automatic run says nothing when it deleted
 # nothing, but it always names what it did delete. Silent deletion is not a
 # thing this tool does.
+# True when a held meeting could be pruned without stranding it: it is old
+# enough, and it has words to rebuild from. A held meeting that was never
+# transcribed keeps its audio whatever anyone answers, because losing it would
+# leave nothing to approve.
+held_is_prunable() {
+  local work="$1" days="$2" track old=1
+  if [ ! -s "$work/them.json" ] && [ ! -s "$work/me.json" ]; then return 1; fi
+  for track in "$work/them.m4a" "$work/me.m4a"; do
+    if [ ! -f "$track" ]; then continue; fi
+    if [ -z "$(find "$track" -mtime "+$days" -print 2>/dev/null)" ]; then return 1; fi
+    old=0
+  done
+  return $old
+}
+
 cmd_prune() {
   local days="$1" mode="${2:-manual}"
   local active="" freed=0 pruned=0 held=0 recent=0 dir work
   if [ -s "$REC_DIR/.recording" ]; then active="$(cat "$REC_DIR/.recording")"; fi
 
+  # Count what is at stake before deleting anything, so the question can name
+  # a number. An automatic run never asks, so it never includes them.
+  local at_stake=0 take_held=no
+  if [ "$mode" = "manual" ] && [ -z "${QN_DRY_RUN:-}" ]; then
+    for dir in "$REC_DIR"/*/; do
+      if [ ! -d "$dir" ]; then continue; fi
+      work="${dir%/}"
+      if [ "$work" = "$active" ]; then continue; fi
+      if [ "$(read_consent "$work")" = "full" ]; then continue; fi
+      if held_is_prunable "$work" "$days"; then at_stake=$((at_stake + 1)); fi
+    done
+    if [ "$at_stake" -gt 0 ] && ask_about_held "$at_stake" "$days"; then
+      take_held=yes
+    fi
+  fi
+
   for dir in "$REC_DIR"/*/; do
     if [ ! -d "$dir" ]; then continue; fi
     work="${dir%/}"
 
-    # A meeting still waiting for your approval needs its audio. `qn approve`
-    # re-transcribes from the tracks, so pruning it would strand the meeting.
-    if [ "$(read_consent "$work")" != "full" ]; then
-      held=$((held + 1)); continue
-    fi
+    # The recording in progress is never touched, whatever anyone answers.
     if [ "$work" = "$active" ]; then
       held=$((held + 1)); continue
+    fi
+    # A meeting awaiting approval is kept unless you said otherwise just now,
+    # and is always kept when it has no words to be rebuilt from.
+    if [ "$(read_consent "$work")" != "full" ]; then
+      if [ "$take_held" != "yes" ] || ! held_is_prunable "$work" "$days"; then
+        held=$((held + 1)); continue
+      fi
     fi
 
     local found=0 track size
@@ -797,6 +857,9 @@ cmd_prune() {
   if [ "$mode" = "auto" ]; then return 0; fi
   if [ "$recent" -gt 0 ]; then step "$recent newer than $days days, left alone"; fi
   if [ "$held" -gt 0 ]; then step "$held still awaiting approval, left alone"; fi
+  if [ -n "${QN_DRY_RUN:-}" ] && [ "$held" -gt 0 ]; then
+    step "run without QN_DRY_RUN to be asked about their audio"
+  fi
 }
 
 # You were in the room. Nothing else here can say that, so a confirmation

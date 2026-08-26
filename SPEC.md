@@ -147,12 +147,17 @@ Audio is over 99% of what the tool stores, at about 70 MB per hour. The note
 already holds the full transcript, so `qn prune` deletes `them.m4a` and
 `me.m4a` and nothing else.
 
-Two recordings are never pruned:
+The recording in progress, named by `.recordings/.recording`, is never pruned.
 
-  A meeting whose consent is not `full`. `qn approve` re-transcribes from the
-  tracks, so pruning it would strand the meeting forever.
+A meeting whose consent is not `full` is kept unless you say otherwise. `qn
+prune` counts the held meetings whose audio is old enough, names the number,
+and asks once. Anything but `y` leaves them alone. Without a terminal to ask
+at the answer is no, so a cron job or a pipe never deletes held audio, and
+`auto_prune` never asks and so never takes it. `QN_ASSUME_YES` answers yes,
+the way `QN_CONSENT` answers for a recording.
 
-  The recording in progress, named by `.recordings/.recording`.
+A held meeting with no `them.json` or `me.json` keeps its audio whatever the
+answer. Nothing would be left to approve.
 
 A pruned recording gets a `.pruned` marker. `qn redo` and `qn approve` read it,
 say the audio is gone, and rebuild from `them.json` and `me.json`, which
