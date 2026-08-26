@@ -309,8 +309,12 @@ printf '{"transcription":[{"offsets":{"from":0,"to":2000},"text":" stub line"}]}
 STUBEOF
 cat > "$STUB/ffmpeg" <<'STUBEOF'
 #!/bin/bash
+# The last argument is the output file, except when it is `-`, which means
+# stdout. health.py measures loudness and discards the audio with `-f null -`,
+# so taking that literally created a file named `-` in the repo, once per run.
 out=""
 for a in "$@"; do out="$a"; done
+if [ "$out" = "-" ]; then exit 0; fi
 : > "$out"
 STUBEOF
 chmod +x "$STUB/claude" "$STUB/whisper-cli" "$STUB/ffmpeg"
