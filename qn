@@ -5,6 +5,7 @@
 #   qn [--with "A, B"] [--local] [title...]   record until Ctrl-C, then process
 #   qn watch                                  record detected meetings by itself
 #   qn redo <id>                              rebuild notes from a recording
+#   qn --notes-only redo <id>                 rebuild notes, reuse the words
 #   qn approve <id>                           send a held meeting to Claude
 #   qn pending                                list meetings awaiting approval
 #   qn play <id> [MM:SS]                      hear what was actually said
@@ -92,6 +93,10 @@ case "$DIARIZE" in
   *) printf 'qn: diarize must be yes or no, got %s\n' "$DIARIZE" >&2; exit 1 ;;
 esac
 VENV_PYTHON="${QN_VENV_PYTHON:-$HERE/.venv/bin/python}"
+
+# Rebuild the notes from words whisper already worked out. Set by
+# --notes-only, and read inside process_recording.
+NOTES_ONLY="no"
 
 AUTO_PRUNE="$(setting "${QN_AUTO_PRUNE:-}" auto_prune no)"
 case "$AUTO_PRUNE" in
@@ -274,6 +279,23 @@ transcribe_track() {
   rm -f "$base.wav" "$log"
 }
 
+# `--notes-only` reuses what whisper wrote last time. A track that has audio
+# but no words was never transcribed, and dropping that speaker's whole side
+# would read as a meeting where nobody spoke.
+require_existing_words() {
+  local work="$1" id track found=0
+  id="$(basename "$work")"
+  for track in them me; do
+    if [ -s "$work/$track.json" ]; then found=1; continue; fi
+    if [ -s "$work/$track.m4a" ]; then
+      die "no words yet for the $track track — run: qn redo $id"
+    fi
+  done
+  if [ "$found" -eq 0 ]; then
+    die "$id has never been transcribed — run: qn redo $id"
+  fi
+}
+
 # ------------------------------------------------------------------ writing
 
 # Claude's guess at which letter is which person, and yours when you have said.
@@ -416,17 +438,25 @@ for w in json.load(sys.stdin)["warnings"]:
     print("  \033[33mwarning: " + w + "\033[0m")' >&2
   fi
 
-  # Before transcription, so a slow model does not delay the audio check, and
-  # so merge.py finds speakers.json already written.
-  if [ "$DIARIZE" = "yes" ] && [ -x "$VENV_PYTHON" ] && [ -f "$HERE/models/segmentation.onnx" ]; then
-    step "grouping voices — this is slower than the transcript"
-    "$VENV_PYTHON" "$HERE/lib/diarize.py" "$work" >/dev/null 2>&1 || \
-      warn "voice grouping failed — the transcript is unaffected"
-  fi
+  if [ "$NOTES_ONLY" = "yes" ]; then
+    # The words do not change because prompt.md did. Reuse them, and rebuild
+    # only what comes after, which is the part that actually changed.
+    require_existing_words "$work"
+    step "reusing the words from last time"
+  else
+    # Before transcription, so a slow model does not delay the audio check, and
+    # so merge.py finds speakers.json already written.
+    if [ "$DIARIZE" = "yes" ] && [ -x "$VENV_PYTHON" ] && [ -f "$HERE/models/segmentation.onnx" ]; then
+      step "grouping voices — this is slower than the transcript"
+      "$VENV_PYTHON" "$HERE/lib/diarize.py" "$work" >/dev/null 2>&1 || \
+        warn "voice grouping failed — the transcript is unaffected"
+    fi
 
-  step "transcribing"
-  transcribe_track "$work" them
-  transcribe_track "$work" me
+    step "transcribing"
+    transcribe_track "$work" them
+    transcribe_track "$work" me
+  fi
+  # Always re-merged: this is where `qn confirm` puts a name on a line.
   python3 "$HERE/lib/merge.py" "$work" > "$work/transcript.txt"
   if [ ! -s "$work/transcript.txt" ]; then
     die "nothing was transcribed — the recording is still in $work"
@@ -497,6 +527,9 @@ auto_prune_once_a_day() {
 
 cmd_record() {
   local people="$1" sharing="$2" title="$3"
+  # Checked before recording, not after. Finding this out at the end would
+  # cost the user the whole meeting.
+  [ "$NOTES_ONLY" = "no" ] || die "--notes-only rebuilds an old meeting, it cannot record a new one"
   [ -x "$RECORDER" ] || die "the recorder is not built — run: make build"
 
   local slug id work
@@ -807,7 +840,7 @@ print(" ".join(sorted({str(r.get("speaker","")) for r in rows if r.get("speaker"
   fi
 
   step "Them $letter is $name, in $id"
-  step "run 'qn redo $id' to rewrite the notes with that name"
+  step "run 'qn --notes-only redo $id' to rewrite the notes with that name"
 }
 
 cmd_people() {
@@ -863,6 +896,23 @@ cmd_doctor() {
     printf '  settings: %s \033[2m(none yet)\033[0m\n' "$CONFIG"
   fi
 
+  # The privacy line, reported from outside. A held meeting is invisible to
+  # Claude by design, so asking Claude what it cannot see proves nothing. This
+  # counts the files directly, with the same parser the MCP server uses.
+  if [ -d "$NOTES_DIR" ] && [ -f "$HERE/mcp/index.py" ]; then
+    python3 - "$HERE/mcp" "$NOTES_DIR" <<'PYEOF' || true
+import sys
+sys.path.insert(0, sys.argv[1])
+import index
+counts = index.audit(sys.argv[2])
+if counts["total"]:
+    print()
+    print(f"  meetings: {counts['total']}")
+    print(f"  indexed:  {counts['indexed']} visible to Claude")
+    print(f"  held:     {counts['held']} private — never sent")
+PYEOF
+  fi
+
   # Two notes folders, each holding half your meetings, with no error anywhere.
   # That is the failure this warning exists to catch.
   if [ "$NOTES_DIR" != "$HOME/Meetings" ] && [ -d "$HOME/Meetings" ]; then
@@ -888,6 +938,7 @@ while [ $# -gt 0 ]; do
     --with)  [ $# -ge 2 ] || die "usage: qn --with \"Name, Name\" [title...]"
              attendees="$2"; shift 2 ;;
     --local) sharing="local"; shift ;;
+    --notes-only) NOTES_ONLY=yes; shift ;;
     --older-than)
              [ $# -ge 2 ] || die "usage: qn prune --older-than 30d"
              keep_days="$(printf '%s' "$2" | sed 's/[dD]$//')"

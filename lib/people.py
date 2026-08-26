@@ -40,7 +40,7 @@ import index  # noqa: E402  (path set above)
 
 import names
 
-PEOPLE_FILE = "people.md"
+PEOPLE_FILE = index.ROSTER_FILENAME
 REMOVED_FILE = ".people-removed"
 SUGGESTED_FILE = ".people-suggested"
 

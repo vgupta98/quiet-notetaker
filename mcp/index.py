@@ -26,6 +26,9 @@ from typing import Any
 
 DEFAULT_NOTES_DIR = "~/Meetings"
 INDEX_FILENAME = ".index.db"
+# The roster sits beside the notes and is not one of them. `people.py`
+# imports this name rather than repeating it.
+ROSTER_FILENAME = "people.md"
 
 # Claude starts the MCP server itself, so the server never sees the shell's
 # environment. Reading the same settings file `qn` reads is what stops a moved
@@ -774,6 +777,33 @@ def actions(
             "done": bool(row["done"]),
         })
     return {"total": len(items), "shown": min(len(items), limit), "items": items[:limit]}
+
+
+def audit(directory: str) -> dict[str, int]:
+    """Count the notes on disk, and how many of them Claude may see.
+
+    `qn doctor` reports this. A held meeting is invisible to every tool here,
+    so the user cannot ask Claude what it is hiding — that question is
+    circular. This answers it from outside.
+
+    It calls `parse_note()`, the one function that reads a note file, so the
+    count can never disagree with what a search returns. A second reading of
+    the sharing rule could drift and reassure the user wrongly, which is the
+    one failure this must not have. A note we cannot read counts as held,
+    because a note that cannot be parsed is a note that cannot be indexed.
+    """
+    directory = os.path.abspath(os.path.expanduser(directory))
+    total = indexed = 0
+    for path in sorted(glob.glob(os.path.join(directory, "*.md"))):
+        if os.path.basename(path) == ROSTER_FILENAME:
+            continue
+        total += 1
+        try:
+            if parse_note(path) is not None:
+                indexed += 1
+        except OSError:
+            continue
+    return {"total": total, "indexed": indexed, "held": total - indexed}
 
 
 def main(argv: list[str]) -> int:

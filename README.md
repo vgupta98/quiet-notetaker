@@ -62,7 +62,17 @@ Held meetings wait for you:
 ```sh
 ./qn play 2026-08-20-1535-sync 01:37   # hear what was actually said
 ./qn redo 2026-08-20-1535-sync         # rebuild notes after editing prompt.md
+./qn --notes-only redo 2026-08-20-1535-sync   # same, without listening again
 ```
+
+`redo` listens to the whole recording again, which takes minutes. Editing
+`prompt.md` changes how the notes read, not what anyone said, so `--notes-only`
+reuses the words from last time and rebuilds only the notes. That takes seconds.
+
+Use plain `redo` only when the audio must be heard again: after you add a word
+to your vocabulary, or after you turn on voice grouping. A `qn confirm` needs
+no such thing, because the name is applied when the two tracks are stitched
+back together, which `--notes-only` still does.
 
 Every recording is judged before transcription. A missing track, a silent
 track, a clipping mic, or one track stopping early is reported in the terminal
@@ -311,6 +321,18 @@ setting came from:
 notes:    /Users/vishalgupta/Documents/notes/meetings
 set by:   /Users/vishalgupta/.config/quiet-notetaker/config
 ```
+
+It also counts what Claude can and cannot see:
+
+```
+meetings: 38
+indexed:  34 visible to Claude
+held:      4 private — never sent
+```
+
+A held meeting is invisible to the search tools by design, so asking Claude
+what it is hiding proves nothing. This counts your files directly, with the
+same code the search uses.
 
 It also warns when `~/Meetings` still holds notes that nothing reads any more.
 

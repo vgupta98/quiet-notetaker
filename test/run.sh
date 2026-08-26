@@ -297,6 +297,9 @@ BODY
 STUBEOF
 cat > "$STUB/whisper-cli" <<'STUBEOF'
 #!/bin/bash
+# QN_WHISPER_LOG makes a call visible, so a test that expects no call can
+# prove it, exactly the way QN_CLAUDE_LOG does for claude.
+if [ -n "${QN_WHISPER_LOG:-}" ]; then printf 'whisper called\n' >> "$QN_WHISPER_LOG"; fi
 of=""
 while [ $# -gt 0 ]; do
   if [ "$1" = "-of" ]; then of="$2"; fi
@@ -493,6 +496,95 @@ if qn_has prune; then
 else
   fail "qn prune" "no prune subcommand in qn"
 fi
+
+# --------------------------------------------------------------------------
+section "rebuilding the notes without listening again"
+# --------------------------------------------------------------------------
+# Editing prompt.md changes how the notes read. It does not change what anyone
+# said, so --notes-only reuses the words whisper already worked out.
+guard_notes_dir
+
+REUSE_DIR="$TMPROOT/notes-only"
+REUSE_ID="2026-06-06-0900-prompt-edit"
+REUSE_WORK="$REUSE_DIR/.recordings/$REUSE_ID"
+WHISPER_LOG="$TMPROOT/whisper-calls.log"
+mkdir -p "$REUSE_WORK"
+printf 'full\n' > "$REUSE_WORK/consent"
+printf 'Priya\n' > "$REUSE_WORK/attendees.txt"
+printf 'audio' > "$REUSE_WORK/them.m4a"
+printf 'audio' > "$REUSE_WORK/me.m4a"
+cat > "$REUSE_WORK/them.json" <<'JSONEOF'
+{"transcription":[{"offsets":{"from":1000,"to":4000},"text":" the release ships on friday"}]}
+JSONEOF
+cat > "$REUSE_WORK/me.json" <<'JSONEOF'
+{"transcription":[{"offsets":{"from":5000,"to":7000},"text":" I will write the migration"}]}
+JSONEOF
+
+reuse_qn() { # reuse_qn <outfile> <args...>
+  local out="$1"; shift
+  rm -f "$WHISPER_LOG"
+  capture 60 "$out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$REUSE_DIR" \
+    QN_WHISPER_LOG="$WHISPER_LOG" QN_CLAUDE_LOG="$TMPROOT/reuse-claude.log" \
+    QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
+    /bin/bash "$QN" "$@"
+}
+
+# --notes-only must not listen again, and must keep the real words. This runs
+# before the plain redo, whose whisper stub would overwrite them.
+rm -f "$TMPROOT/reuse-claude.log"
+reuse_qn "$TMPROOT/reuse.out" --notes-only redo "$REUSE_ID"
+assert_eq "0" "$CAPTURE_CODE" "qn --notes-only redo exits 0"
+if [ -e "$WHISPER_LOG" ]; then
+  fail "--notes-only never runs whisper" "the stub logged: $(cat "$WHISPER_LOG")"
+else
+  pass "--notes-only never runs whisper"
+fi
+assert_file "$TMPROOT/reuse-claude.log" "--notes-only still rebuilds the notes with claude"
+assert_file "$REUSE_DIR/$REUSE_ID.md" "--notes-only writes the note"
+reuse_text="$(cat "$REUSE_DIR/$REUSE_ID.md")"
+assert_contains "$reuse_text" "the release ships on friday" "--notes-only keeps what them.json said"
+assert_contains "$reuse_text" "I will write the migration" "--notes-only keeps what me.json said"
+assert_contains "$reuse_text" "sharing: full" "--notes-only writes a complete note"
+assert_contains "$(cat "$TMPROOT/reuse.out")" "reusing the words" "--notes-only says what it is doing"
+
+# A plain redo still listens to the audio again.
+reuse_qn "$TMPROOT/reuse-plain.out" redo "$REUSE_ID"
+assert_eq "0" "$CAPTURE_CODE" "a plain qn redo still exits 0"
+assert_file "$WHISPER_LOG" "a plain qn redo does run whisper"
+
+# Audio but no words: refuse, rather than write a note in which nobody spoke.
+BARE_ID="2026-06-06-1000-never-transcribed"
+BARE_WORK="$REUSE_DIR/.recordings/$BARE_ID"
+mkdir -p "$BARE_WORK"
+printf 'full\n' > "$BARE_WORK/consent"
+printf 'audio' > "$BARE_WORK/them.m4a"
+printf 'audio' > "$BARE_WORK/me.m4a"
+reuse_qn "$TMPROOT/reuse-bare.out" --notes-only redo "$BARE_ID"
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "--notes-only refuses a recording with no words" "it exited 0"
+else
+  pass "--notes-only refuses a recording with no words"
+fi
+assert_contains "$(cat "$TMPROOT/reuse-bare.out")" "qn redo $BARE_ID" "the refusal names the command that fixes it"
+if [ -e "$REUSE_DIR/$BARE_ID.md" ]; then
+  fail "--notes-only writes no note when it refuses" "the note is there"
+else
+  pass "--notes-only writes no note when it refuses"
+fi
+
+# One track transcribed and one not must also be refused: half a conversation
+# reads like a complete one.
+printf 'audio' > "$BARE_WORK/them.m4a"
+cat > "$BARE_WORK/them.json" <<'JSONEOF'
+{"transcription":[{"offsets":{"from":0,"to":2000},"text":" only one side"}]}
+JSONEOF
+reuse_qn "$TMPROOT/reuse-half.out" --notes-only redo "$BARE_ID"
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "--notes-only refuses a half-transcribed recording" "it exited 0"
+else
+  pass "--notes-only refuses a half-transcribed recording"
+fi
+assert_contains "$(cat "$TMPROOT/reuse-half.out")" "me track" "the refusal names the track that is missing"
 
 # --------------------------------------------------------------------------
 section "voice hints and qn confirm"
@@ -819,6 +911,44 @@ else
   pass "a bad prune_days is rejected"
 fi
 assert_contains "$(cat "$TMPROOT/conf-bad.out")" "prune_days" "the failure names the bad setting"
+
+# --------------------------------------------------------------------------
+section "doctor reports the privacy boundary"
+# --------------------------------------------------------------------------
+# A held meeting is invisible to every query in this tool, so the user cannot
+# ask Claude what it is hiding. `qn doctor` answers that from outside.
+guard_notes_dir
+
+AUDIT_NOTES="$TMPROOT/audit-notes"
+mkdir -p "$AUDIT_NOTES"
+cp "$full_note" "$AUDIT_NOTES/"
+cp "$local_note" "$AUDIT_NOTES/"
+cp "$QN_NOTES_DIR/people.md" "$AUDIT_NOTES/" 2>/dev/null || true
+
+capture 30 "$TMPROOT/audit.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$AUDIT_NOTES" \
+  /bin/bash "$QN" doctor
+audit_out="$(cat "$TMPROOT/audit.out")"
+assert_contains "$audit_out" "meetings: 2" "doctor counts the notes on disk"
+assert_contains "$audit_out" "indexed:  1 visible to Claude" "doctor counts what Claude can see"
+assert_contains "$audit_out" "held:     1 private" "doctor counts what is held back"
+
+# The roster lives beside the notes and is not a meeting.
+assert_missing "$audit_out" "meetings: 3" "the roster is not counted as a meeting"
+
+# An empty folder must say nothing rather than print three zeroes.
+mkdir -p "$TMPROOT/audit-empty"
+capture 30 "$TMPROOT/audit-empty.out" env PATH="$STUB:$PATH" \
+  QN_NOTES_DIR="$TMPROOT/audit-empty" /bin/bash "$QN" doctor
+assert_missing "$(cat "$TMPROOT/audit-empty.out")" "meetings: 0" "an empty folder reports no counts"
+
+# The number shown must be the number a search can actually reach.
+capture 30 "$TMPROOT/audit-index.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$AUDIT_NOTES" \
+  /bin/bash "$QN" index
+audit_rows="$(python3 -c "
+import sqlite3, sys
+print(sqlite3.connect(sys.argv[1]).execute('SELECT count(*) FROM meetings').fetchone()[0])
+" "$AUDIT_NOTES/.index.db")"
+assert_eq "1" "$audit_rows" "the index holds exactly the number doctor called visible"
 
 # --------------------------------------------------------------------------
 section "consent, end to end"

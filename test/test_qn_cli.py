@@ -133,6 +133,22 @@ class Dispatch(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("usage", done.stderr)
 
+    def test_notes_only_is_consumed_before_the_verb(self):
+        # The flag must be eaten by the argument loop, so `redo` still matches
+        # the subcommand. If it leaked through, this would record a meeting.
+        done = run_qn("--notes-only", "redo")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("usage", done.stderr)
+        self.assertNotIn("id=", done.stdout)
+
+    def test_notes_only_cannot_record_a_new_meeting(self):
+        # There is nothing to reuse, and finding out after the meeting would
+        # cost the user the recording.
+        done = run_qn("--notes-only", "some meeting")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("--notes-only", done.stderr)
+        self.assertNotIn("id=", done.stdout)
+
     def test_a_dry_run_creates_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_qn("some meeting", notes=tmp)

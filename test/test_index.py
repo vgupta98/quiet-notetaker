@@ -435,6 +435,57 @@ class SharingGateTests(unittest.TestCase):
         self.accept(self.note("---\ntitle: Priya's review\nsharing: full\n---\n"))
 
 
+class AuditTests(unittest.TestCase):
+    """The count qn doctor reports.
+
+    A held meeting is invisible to every query here, so the user cannot ask
+    Claude what it is hiding. These assert the count answers that from outside,
+    and that it errs towards calling a note private.
+    """
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.notes = self._temporary.name
+        self.addCleanup(self._temporary.cleanup)
+
+    def test_an_empty_folder_counts_nothing(self):
+        self.assertEqual(index.audit(self.notes), {"total": 0, "indexed": 0, "held": 0})
+
+    def test_a_shareable_note_is_counted_as_visible(self):
+        write_note(self.notes, "2026-08-20-1535-sdk-sync", SDK_SYNC)
+        self.assertEqual(index.audit(self.notes), {"total": 1, "indexed": 1, "held": 0})
+
+    def test_a_held_note_is_counted_as_private(self):
+        write_note(self.notes, "2026-08-21-0900-held-chat", HELD_NOTE)
+        self.assertEqual(index.audit(self.notes), {"total": 1, "indexed": 0, "held": 1})
+
+    def test_the_two_are_counted_apart(self):
+        write_note(self.notes, "2026-08-20-1535-sdk-sync", SDK_SYNC)
+        write_note(self.notes, "2026-05-04-1000-old-roadmap", OLD_ROADMAP)
+        write_note(self.notes, "2026-08-21-0900-held-chat", HELD_NOTE)
+        self.assertEqual(index.audit(self.notes), {"total": 3, "indexed": 2, "held": 1})
+
+    def test_the_roster_is_not_a_meeting(self):
+        write_note(self.notes, "2026-08-20-1535-sdk-sync", SDK_SYNC)
+        with open(os.path.join(self.notes, index.ROSTER_FILENAME), "w", encoding="utf-8") as handle:
+            handle.write("# People\n- **Priya** (2 meetings) - my manager\n")
+        self.assertEqual(index.audit(self.notes), {"total": 1, "indexed": 1, "held": 0})
+
+    def test_a_note_with_no_frontmatter_counts_as_private(self):
+        write_note(self.notes, "2026-08-22-1000-scribble", "just some text\n")
+        self.assertEqual(index.audit(self.notes), {"total": 1, "indexed": 0, "held": 1})
+
+    def test_the_count_agrees_with_what_the_index_holds(self):
+        # The number the user is shown must be the number a search can reach.
+        # Two readings of the sharing rule could drift; this proves they do not.
+        write_note(self.notes, "2026-08-20-1535-sdk-sync", SDK_SYNC)
+        write_note(self.notes, "2026-05-04-1000-old-roadmap", OLD_ROADMAP)
+        write_note(self.notes, "2026-08-21-0900-held-chat", HELD_NOTE)
+        database = index.index_path(self.notes)
+        stats = index.refresh(database, self.notes)
+        self.assertEqual(index.audit(self.notes)["indexed"], stats["total"])
+
+
 class QuerySafetyTests(IndexTestCase):
     """A query must not be able to lie about which column it matched.
 

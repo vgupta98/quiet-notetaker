@@ -94,6 +94,7 @@ Minutes may exceed 59 (`[104:12]`). Speaker is exactly `Me` or `Them`.
 ```
 qn [--with "A, B"] [--local] [title...]   record until Ctrl-C, then process
 qn redo <id|dir>                rebuild notes from an existing recording
+qn --notes-only redo <id>       rebuild the notes, reusing the transcript
 qn play <id> [MM:SS]            play the audio from a timestamp
 qn approve <id>                 send a held (local) meeting to Claude
 qn pending                      list meetings awaiting approval
@@ -108,6 +109,13 @@ qn doctor                       check dependencies and permissions
 
 A subcommand is recognised only when the argument count matches it, so a
 meeting called "index review with priya" records rather than reindexing.
+
+`--notes-only` reuses `them.json` and `me.json` instead of running whisper
+again. The words do not change because `prompt.md` did, so a prompt edit costs
+seconds rather than a second pass over the audio. It refuses a recording that
+has audio but no words yet, because dropping a speaker's whole side would look
+like a meeting where nobody spoke. It is refused on a new recording, where
+there is nothing to reuse.
 
 ## The roster
 
@@ -230,6 +238,13 @@ shell's environment; the file is the only channel that reaches both sides.
 
 `qn` resolves its own symlinks before locating `models/`, `build/` and its
 helper scripts, so it works from any directory once linked onto `PATH`.
+
+`qn doctor` also counts the notes on disk, how many are indexed, and how many
+are held. It calls `index.audit()`, which calls `parse_note()` — the same
+function the server calls — so the count can never disagree with what a search
+returns. This is reported by `qn` and not by the MCP server on purpose: a held
+meeting is invisible to every tool there, so Claude cannot enumerate what it is
+hiding. The roster is not counted as a meeting.
 
 ## Watcher event protocol
 
