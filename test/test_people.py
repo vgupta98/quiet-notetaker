@@ -320,5 +320,105 @@ class TestContext(unittest.TestCase):
         self.assertEqual(len(people.context(self.dir, "Priya, Arjun").splitlines()), 2)
 
 
+class Aliases(unittest.TestCase):
+    """An address the calendar gives, claimed by the person it belongs to.
+
+    A real meeting read `attendees: ["mciccone@example.com"]` while the
+    roster said `Marco`. Nothing linked them, so every action item said "Them"
+    and searching for Marco found no meetings at all.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def roster(self, *lines):
+        with open(os.path.join(self.tmp, people.PEOPLE_FILE), "w", encoding="utf-8") as handle:
+            handle.write(people.HEADER)
+            for line in lines:
+                handle.write(line + "\n")
+
+    def test_a_line_with_an_address_round_trips(self):
+        entry = people.parse_roster("- **Marco** <mciccone@example.com> — mobile SDKs")[0]
+        self.assertEqual(entry.name, "Marco")
+        self.assertEqual(entry.aliases, ["mciccone@example.com"])
+        self.assertEqual(entry.note, "mobile SDKs")
+        self.assertIn("<mciccone@example.com>", entry.render())
+
+    def test_several_addresses_on_one_person(self):
+        entry = people.parse_roster("- **Marco** <a@x.com, b@y.com>")[0]
+        self.assertEqual(entry.aliases, ["a@x.com", "b@y.com"])
+
+    def test_a_line_without_addresses_still_parses(self):
+        entry = people.parse_roster("- **Aisha** (3 meetings) — calls himself KC")[0]
+        self.assertEqual(entry.aliases, [])
+        self.assertEqual(entry.note, "calls himself KC")
+
+    def test_the_address_resolves_to_the_person(self):
+        roster = people.parse_roster("- **Marco** <mciccone@example.com>")
+        self.assertEqual(people.resolve(roster, "mciccone@example.com"), "Marco")
+
+    def test_an_unclaimed_address_falls_back_to_reading_it(self):
+        roster = people.parse_roster("- **Marco** <mciccone@example.com>")
+        self.assertEqual(people.resolve(roster, "aisha@example.com"), "Aisha")
+
+    def test_one_address_never_answers_for_another_person(self):
+        roster = people.parse_roster("- **Marco** <mciccone@example.com>")
+        self.assertFalse(roster[0].answers_to("someone.else@example.com"))
+
+    def test_the_note_records_the_person_not_the_address(self):
+        self.roster("- **Marco** <mciccone@example.com>")
+        self.assertEqual(people.display(self.tmp, "mciccone@example.com"), "Marco")
+
+    def test_display_leaves_an_unknown_attendee_readable(self):
+        self.roster("- **Marco** <mciccone@example.com>")
+        self.assertEqual(people.display(self.tmp, "aisha@example.com"), "Aisha")
+
+    def test_display_does_not_repeat_a_person(self):
+        self.roster("- **Marco** <mciccone@example.com>")
+        self.assertEqual(people.display(self.tmp, "mciccone@example.com, Marco"), "Marco")
+
+    def test_what_you_wrote_reaches_claude_through_the_address(self):
+        self.roster("- **Marco** <mciccone@example.com> — mobile SDKs")
+        block = people.context(self.tmp, "mciccone@example.com")
+        self.assertIn("Marco", block)
+        self.assertIn("mobile SDKs", block)
+        self.assertNotIn("Dciccale", block)
+
+    def test_counting_folds_the_address_into_the_person(self):
+        roster = people.parse_roster("- **Marco** <mciccone@example.com>")
+        notes = [
+            {"id": "a", "date": "2026-08-25", "attendees": ["mciccone@example.com"]},
+            {"id": "b", "date": "2026-08-27", "attendees": ["Marco"]},
+        ]
+        harvested = people.harvest(notes, roster)
+        self.assertEqual([person.name for person in harvested], ["Marco"])
+        self.assertEqual(len(harvested[0].meetings), 2)
+
+    def test_without_a_roster_the_address_is_still_a_separate_person(self):
+        # No claim has been made, so the tool must not guess they are one.
+        notes = [
+            {"id": "a", "date": "2026-08-25", "attendees": ["mciccone@example.com"]},
+            {"id": "b", "date": "2026-08-27", "attendees": ["Marco"]},
+        ]
+        self.assertEqual(len(people.harvest(notes)), 2)
+
+    def test_a_refresh_never_drops_what_you_claimed(self):
+        self.roster("- **Marco** <mciccone@example.com> — mobile SDKs")
+        with open(os.path.join(self.tmp, "2026-08-27-1416-call.md"), "w", encoding="utf-8") as handle:
+            handle.write('---\ntitle: "call"\ndate: 2026-08-27 14:16\n'
+                         'attendees: ["mciccone@example.com"]\nsharing: full\n---\n\n# call\n')
+        people.refresh(self.tmp)
+        again = people.read_roster(self.tmp)
+        self.assertEqual([person.name for person in again], ["Marco"])
+        self.assertEqual(again[0].aliases, ["mciccone@example.com"])
+        self.assertEqual(again[0].note, "mobile SDKs")
+        # parse_roster reports the bracket it read, not a rebuilt count.
+        self.assertIn("1 meeting", again[0].stats())
+
+    def test_an_angle_bracket_in_a_calendar_name_cannot_forge_a_claim(self):
+        self.assertNotIn("<", people.clean_name("Marco <admin@evil.com>"))
+
+
 if __name__ == "__main__":
     unittest.main()

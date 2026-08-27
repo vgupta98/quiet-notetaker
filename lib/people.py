@@ -51,10 +51,11 @@ MAX_CONTEXT = 20
 
 # A name arrives from a calendar invite, so treat it as hostile. These would
 # break the roster line back into fields, or end the prompt block early.
-UNSAFE = re.compile(r"[\x00-\x1f\x7f*()\[\]—]")
+UNSAFE = re.compile(r"[\x00-\x1f\x7f*()\[\]<>—]")
 
 LINE = re.compile(
     r"^-[ \t]+\*\*(?P<name>[^*]+?)\*\*"             # - **Name**
+    r"(?:[ \t]*<(?P<aliases>[^<>]*)>)?"              # <mciccone@example.com>
     r"(?:[ \t]*\((?P<stats>[^)]*)\))?"              # (4 meetings, last 2026-08-22)
     r"(?:[ \t]*(?:—|--|-)[ \t]*(?P<note>.*?))?"     # — anything you wrote
     r"[ \t]*$"
@@ -68,6 +69,12 @@ HEADER = """# People in your meetings.
 #
 #   - **Priya Sharma** (4 meetings, last 2026-08-22) — my manager, owns billing
 #
+# A calendar often gives an address rather than a name, and an address like
+# mciccone@ says nothing about who Marco is. Put the addresses in angle
+# brackets and this becomes one person, in the notes and in search:
+#
+#   - **Marco** <mciccone@example.com> — mobile SDKs
+#
 # Delete a line to drop that person for good. Add your own freely.
 """
 
@@ -76,6 +83,10 @@ HEADER = """# People in your meetings.
 class Person:
     name: str
     note: str = ""
+    # Addresses that mean this person. A calendar gives `mciccone@` and no
+    # rule turns that into "Marco", so the user says so once and it holds
+    # everywhere: the roster, the note, and the attendee filter in search.
+    aliases: list[str] = field(default_factory=list)
     meetings: set[str] = field(default_factory=set)
     last: str = ""
     # What the file said last time. Kept so a plain read of people.md still
@@ -96,8 +107,19 @@ class Person:
             return f"{count} {word}, last {self.last}"
         return f"{count} {word}"
 
+    def answers_to(self, raw: str) -> bool:
+        """True when this raw attendee string means this person."""
+        candidate = str(raw).strip().casefold()
+        if not candidate:
+            return False
+        if candidate in {alias.casefold() for alias in self.aliases}:
+            return True
+        return same_person(self.name, clean_name(raw))
+
     def render(self) -> str:
         line = f"- **{self.name}**"
+        if self.aliases:
+            line += " <" + ", ".join(self.aliases) + ">"
         stats = self.stats()
         if stats:
             line += f" ({stats})"
@@ -121,12 +143,15 @@ def clean_name(raw: str) -> str:
     return " ".join(flat.split())
 
 
-def split_attendees(raw: str) -> list[str]:
-    """Read a `--with` string or an attendees.txt file into names."""
+def split_attendees(raw: str, roster: list[Person] | None = None) -> list[str]:
+    """Read a `--with` string or an attendees.txt file into names.
+
+    With a roster, an address the user has claimed becomes that person.
+    """
     names: list[str] = []
     seen: set[str] = set()
     for piece in re.split(r"[,\n;]", raw or ""):
-        name = clean_name(piece)
+        name = resolve(roster, piece) if roster else clean_name(piece)
         if len(name) < 2 or name.casefold() in seen:
             continue
         seen.add(name.casefold())
@@ -155,16 +180,31 @@ def same_person(one: str, other: str) -> bool:
 # building the roster
 # --------------------------------------------------------------------------
 
-def harvest(notes: list[dict]) -> list[Person]:
+def resolve(roster: list[Person], raw: str) -> str:
+    """The name this attendee really is, according to the roster.
+
+    An address the user has claimed becomes that person. Everything else falls
+    back to reading a name out of the address, which is all we can honestly do.
+    """
+    for person in roster:
+        if person.answers_to(raw):
+            return person.name
+    return clean_name(raw)
+
+
+def harvest(notes: list[dict], roster: list[Person] | None = None) -> list[Person]:
     """Count who attended what. `notes` are dicts from index.parse_note.
 
     Private meetings are already absent, because parse_note refuses them.
+    `roster` supplies the aliases, so `mciccone@` counts towards Marco rather
+    than inventing a second person called Dciccale.
     """
+    known = roster or []
     found: dict[str, Person] = {}
     for note in sorted(notes, key=lambda item: item.get("id", "")):
         day = str(note.get("date", ""))[:10]
         for raw in note.get("attendees", []):
-            name = clean_name(str(raw))
+            name = resolve(known, str(raw))
             if len(name) < 2:
                 continue
             person = found.setdefault(name.casefold(), Person(name=name))
@@ -189,7 +229,9 @@ def parse_roster(text: str) -> list[Person]:
         if len(name) < 2 or name.casefold() in seen:
             continue
         seen.add(name.casefold())
+        aliases = [piece.strip() for piece in (match.group("aliases") or "").split(",")]
         people.append(Person(name=name, note=(match.group("note") or "").strip(),
+                             aliases=[alias for alias in aliases if alias],
                              recorded=(match.group("stats") or "").strip()))
     return people
 
@@ -221,6 +263,8 @@ def merge(existing: list[Person], harvested: list[Person], removed: set[str]) ->
             person.meetings = set(fresh.meetings)
             person.last = fresh.last
             person.recorded = ""
+        # `person` is the entry read from the file, so its aliases survive:
+        # harvest never produces one, and must never drop one.
         out.append(person)
 
     for person in harvested:
@@ -275,7 +319,7 @@ def refresh(directory: str) -> list[Person]:
                     notes.append(note)
 
     before = read_roster(directory)
-    harvested = harvest(notes)
+    harvested = harvest(notes, before)
     removed = load_removed(directory)
 
     # Someone we added before, who is no longer in the file, was deleted on
@@ -305,14 +349,17 @@ def context(directory: str, attendees: str) -> str:
     Every attendee is listed, whether or not the roster knows them, because
     prompt.md forbids Claude from using a name that is not on this list.
     """
-    names = split_attendees(attendees)
+    # The roster is read first, so an address is resolved to its person before
+    # anything is looked up. Cleaning it first gave "Dciccale", which matches
+    # no entry, and Claude was handed a name nobody says out loud.
+    roster = read_roster(directory)
+    names = split_attendees(attendees, roster)
     if not names:
         return ""
 
-    roster = read_roster(directory)
     lines: list[str] = []
     for name in names[:MAX_CONTEXT]:
-        match = next((person for person in roster if same_person(person.name, name)), None)
+        match = next((person for person in roster if person.answers_to(name)), None)
         if match is None:
             lines.append(name)
             continue
@@ -324,9 +371,22 @@ def context(directory: str, attendees: str) -> str:
     return "\n".join(lines)
 
 
+def display(directory: str, attendees: str) -> str:
+    """The attendee names a note should carry.
+
+    The note used to record whatever the calendar said, so a meeting with
+    Marco read `attendees: ["mciccone@example.com"]` and searching for
+    Marco found nothing. What the user calls someone is what belongs here.
+    """
+    return ", ".join(split_attendees(attendees, read_roster(directory)))
+
+
 if __name__ == "__main__":
     where = sys.argv[1] if len(sys.argv) > 1 else index.notes_dir()
-    if "--context" in sys.argv:
+    if "--display" in sys.argv:
+        position = sys.argv.index("--display")
+        print(display(where, sys.argv[position + 1] if position + 1 < len(sys.argv) else ""))
+    elif "--context" in sys.argv:
         position = sys.argv.index("--context")
         given = sys.argv[position + 1] if position + 1 < len(sys.argv) else ""
         print(context(where, given))

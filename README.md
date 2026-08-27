@@ -182,6 +182,17 @@ roster:
 is, and that text goes to Claude whenever that person is in a meeting. It is
 what turns a `Them` line into a name.
 
+A calendar usually gives an address, not a name, and `mciccone@` says nothing
+about who Marco is. Claim the address and it becomes that person everywhere —
+in the notes, in what Claude is told, and in search:
+
+```
+- **Marco** <mciccone@example.com> — mobile SDKs
+```
+
+Without that claim the meeting reads `attendees: ["mciccone@example.com"]`,
+searching for Marco finds nothing, and every action item says "Them".
+
 - Only the attendees of *this* meeting are sent. Nobody else is named.
 - Only `sharing: full` meetings add a name, because the roster goes back to Claude.
 - Delete a line and that person never comes back. Add your own freely.

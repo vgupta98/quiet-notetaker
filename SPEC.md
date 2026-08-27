@@ -138,8 +138,22 @@ there is nothing to reuse.
 - **Priya Sharma** (4 meetings, last 2026-08-22) — my manager, owns billing
 ```
 
+An address in angle brackets claims that address for that person:
+
+```
+- **Marco** <mciccone@example.com> (2 meetings, last 2026-08-27) — mobile SDKs
+```
+
+A calendar usually gives an address, and no rule turns `mciccone@` into
+"Marco". Without the claim the attendee reads as "Dciccale", which matches no
+roster entry, so what the user wrote never reaches Claude and every line stays
+"Them". The claim is used in three places: the context block, the `attendees:`
+in the note, and therefore the attendee filter in search. Angle brackets are
+stripped from a calendar name, so an invite cannot forge one.
+
 The bracket is generated and gets rewritten after every recording. The text
-after the dash is the user's and is never overwritten. `qn` sends the entries
+after the dash is the user's and is never overwritten. So is the claim: harvest
+never produces one and merge never drops one. `qn` sends the entries
 matching this meeting's attendees to Claude with the transcript.
 
 Two rules hold:
