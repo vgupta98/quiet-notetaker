@@ -630,7 +630,9 @@ cmd_watch() {
     die "another qn watch is already recording — stop it first"
   fi
   rm -f "$lock" "$lock.pid"
-  trap watch_cleanup INT TERM EXIT
+  # HUP too: closing the terminal window must stop the recorder through
+  # this path, so the encoder gets its moment to write the index.
+  trap watch_cleanup INT TERM HUP EXIT
   local started_as
   started_as="$(script_fingerprint)"
   step "watching for meetings — ctrl-c to stop"

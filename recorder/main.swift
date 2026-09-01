@@ -215,17 +215,28 @@ final class StopWaiter {
     private let lock = NSLock()
     private var sources: [DispatchSourceSignal] = []
 
+    /// True once a signal has asked for the stop. Read by `--self-test`.
+    var hasStopped: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return fired
+    }
+
     func arm() {
-        for sig in [SIGINT, SIGTERM] {
+        // SIGHUP belongs here with the other two. macOS sends it when the
+        // terminal window closes, and its default action kills the process on
+        // the spot. That leaves an .m4a with no index, and nothing can play or
+        // transcribe such a file.
+        for sig in [SIGINT, SIGTERM, SIGHUP] {
             signal(sig, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
-            source.setEventHandler { [weak self] in self?.fire() }
+            source.setEventHandler { [weak self] in self?.fire(sig) }
             source.resume()
             sources.append(source)
         }
     }
 
-    private func fire() {
+    private func fire(_ received: Int32) {
         lock.lock()
         let first = !fired
         fired = true
@@ -238,9 +249,16 @@ final class StopWaiter {
             return
         }
 
-        // The first interrupt asked for a clean stop. A second one means the
-        // user will not wait for the encoder, so leave now and say what that
-        // costs. Without this the only way out of a hung encoder is kill -9.
+        // Only a second ctrl-c means the user will not wait for the encoder.
+        // Leave then, and say what it costs. Without this the only way out of
+        // a hung encoder is kill -9.
+        //
+        // Any other repeat is the same request twice, so it must be ignored.
+        // ctrl-c on `qn watch` interrupts the whole process group, and
+        // watch_cleanup sends the recorder its own SIGTERM milliseconds later.
+        // Acting on that second signal destroyed the recording it was ending.
+        guard received == SIGINT else { return }
+
         FileHandle.standardError.write("\r\u{1B}[K".data(using: .utf8)!)
         note("force-quitting — the recording is unfinished and may be unplayable")
         exit(130)
@@ -330,6 +348,30 @@ func runSelfTest() -> Int32 {
             .hasPrefix("warning:") == true)
     check("early samples count as loss too",
           lossReport(track: "me.m4a", stats: TrackStats(appended: 100, dropped: 0, early: 2)) != nil)
+
+    // Signals. Every signal that can reach a recording must end it through
+    // the encoder. A signal that kills the process instead costs the whole
+    // meeting, because the index is written last.
+    //
+    // Both checks below are proved by arriving at them at all: an unhandled
+    // SIGHUP, or a force-quit on the SIGTERM, would end this process first.
+    let stopper = StopWaiter()
+    stopper.arm()
+
+    kill(getpid(), SIGHUP)
+    var stopped = false
+    for _ in 0..<200 {
+        stopped = stopper.hasStopped
+        if stopped { break }
+        usleep(10_000)
+    }
+    check("a hangup asks for a clean stop", stopped)
+
+    // The duplicate `qn watch` sends: ctrl-c already interrupted the group,
+    // and watch_cleanup follows it with a SIGTERM of its own.
+    kill(getpid(), SIGTERM)
+    usleep(200_000)
+    check("a repeated stop signal never force-quits the encoder", true)
 
     print(failures == 0 ? "all checks passed" : "\(failures) check(s) failed")
     return failures == 0 ? 0 : 1

@@ -236,6 +236,18 @@ for module in "$ROOT"/lib/*.py "$ROOT"/mcp/*.py; do
   fi
 done
 
+section "recorder"
+# --------------------------------------------------------------------------
+# The self-test ends by signalling itself. A recorder that dies on a signal
+# instead of stopping loses the whole meeting, because the index is written
+# last, so those checks exit non-zero here.
+if [ -x "$ROOT/build/recorder" ]; then
+  assert_exit 0 "build/recorder --self-test" "$ROOT/build/recorder" --self-test
+else
+  skip "build/recorder --self-test" "build/recorder is not built"
+fi
+
+# --------------------------------------------------------------------------
 section "watcher"
 # --------------------------------------------------------------------------
 if [ -x "$ROOT/build/watcher" ]; then
