@@ -6,7 +6,6 @@ lets Claude answer questions across every meeting you have ever had.
 No bot joins the call. No audio ever leaves the machine. Your notes are plain
 markdown in a folder you own — no database, nothing to be locked out of.
 
-Design: https://claude.ai/code/artifact/e7d7b11d-56c5-4c67-8fb6-4e497fa553e9
 Contract: [SPEC.md](SPEC.md)
 
 ## Setup
