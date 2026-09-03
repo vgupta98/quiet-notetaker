@@ -138,7 +138,7 @@ class MergeReadsTheHint(unittest.TestCase):
 
 
 class Confirmations(unittest.TestCase):
-    """`qn confirm` is the only thing allowed to put a name on a line."""
+    """What you told `qn confirm` outranks every other source of a name."""
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="qn-confirm-")
@@ -196,6 +196,180 @@ class Confirmations(unittest.TestCase):
         second = merge.format_turns(merge.build_turns(merge.read_segments(self.path)))
         self.assertEqual(first, second)
         self.assertIn("Marco:", first)
+
+
+class RosterMatches(unittest.TestCase):
+    """`matched.txt` names a line too, but never over your own answer."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="qn-matched-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.path = pathlib.Path(self.dir)
+        rows = [{"offsets": {"from": 0, "to": 2000}, "text": "shall I start"},
+                {"offsets": {"from": 9000, "to": 11_000}, "text": "yes go ahead"}]
+        (self.path / "them.json").write_text(json.dumps({"transcription": rows}))
+        (self.path / "speakers.json").write_text(json.dumps(
+            [{"start_ms": 0, "end_ms": 3000, "speaker": "A"},
+             {"start_ms": 8000, "end_ms": 12_000, "speaker": "B"}]))
+
+    def labels(self):
+        return [row[2] for row in merge.read_segments(self.path)]
+
+    def test_a_matched_voice_becomes_the_person(self):
+        (self.path / "matched.txt").write_text("A=Aisha\n")
+        self.assertEqual(self.labels(), ["Aisha", "Them B"])
+
+    def test_your_confirmation_beats_the_roster(self):
+        (self.path / "matched.txt").write_text("A=Aisha\n")
+        (self.path / "confirmed.txt").write_text("A=Tom\n")
+        self.assertEqual(self.labels(), ["Tom", "Them B"])
+
+    def test_the_roster_still_names_the_voices_you_did_not_confirm(self):
+        (self.path / "matched.txt").write_text("A=Aisha\nB=Marco\n")
+        (self.path / "confirmed.txt").write_text("A=Tom\n")
+        self.assertEqual(self.labels(), ["Tom", "Marco"])
+
+    def test_no_matched_file_reads_exactly_as_before(self):
+        self.assertEqual(self.labels(), ["Them A", "Them B"])
+
+    def test_a_junk_line_is_skipped_without_losing_the_good_ones(self):
+        (self.path / "matched.txt").write_text("nonsense\nB=Marco\n")
+        self.assertEqual(self.labels(), ["Them A", "Marco"])
+
+
+def said(speaker, start_ms, seconds):
+    return {"start_ms": start_ms, "end_ms": start_ms + int(seconds * 1000),
+            "speaker": speaker}
+
+
+class ChoosingAudioForAVoiceprint(unittest.TestCase):
+    """`print_ranges` picks which audio represents a voice. No model needed."""
+
+    def test_the_longest_stretch_is_taken_first(self):
+        ranges = diarize.print_ranges([said("A", 0, 3), said("A", 60_000, 25)])
+        self.assertEqual(ranges["A"][0], (0, 3_000))       # sorted by time...
+        self.assertEqual(len(ranges["A"]), 2)
+        # ...but the 25-second stretch got its full length, the 3-second one
+        # only what the budget had left.
+        self.assertEqual(ranges["A"][1], (60_000, 85_000))
+
+    def test_the_budget_is_the_stated_one(self):
+        spans = diarize.print_ranges([said("A", 0, 100)])["A"]
+        total = sum(end - start for start, end in spans)
+        self.assertEqual(total, int(diarize.PRINT_SECONDS * 1000))
+
+    def test_a_segment_is_cut_short_when_the_budget_runs_out(self):
+        spans = diarize.print_ranges([said("A", 0, 20), said("A", 30_000, 15)])["A"]
+        self.assertEqual(spans, [(0, 20_000), (30_000, 40_000)])
+
+    def test_a_voice_shorter_than_the_budget_gives_all_it_has(self):
+        spans = diarize.print_ranges([said("A", 0, 5)])["A"]
+        self.assertEqual(spans, [(0, 5_000)])
+
+    def test_ranges_come_back_in_time_order(self):
+        spans = diarize.print_ranges([said("A", 90_000, 4), said("A", 10_000, 8)])["A"]
+        self.assertEqual(spans, sorted(spans))
+
+    def test_each_voice_gets_its_own_budget(self):
+        ranges = diarize.print_ranges([said("A", 0, 100), said("B", 200_000, 100)])
+        for letter in ("A", "B"):
+            total = sum(end - start for start, end in ranges[letter])
+            self.assertEqual(total, int(diarize.PRINT_SECONDS * 1000))
+
+    def test_nothing_labelled_means_nothing_to_print(self):
+        self.assertEqual(diarize.print_ranges([]), {})
+
+
+class WorthRemembering(unittest.TestCase):
+    """A voice must talk long enough before the tool offers to remember it."""
+
+    def test_talking_time_adds_up_per_voice(self):
+        rows = [said("A", 0, 30), said("A", 60_000, 30), said("B", 0, 10)]
+        self.assertEqual(diarize.talking(rows), {"A": 60.0, "B": 10.0})
+
+    def test_the_floor_is_the_stated_one(self):
+        just_under = diarize.MIN_PRINT_SECONDS - 0.1
+        self.assertEqual(diarize.worth_remembering([said("A", 0, just_under)]), set())
+        self.assertEqual(diarize.worth_remembering([said("A", 0, diarize.MIN_PRINT_SECONDS)]),
+                         {"A"})
+
+    def test_the_floor_is_higher_than_the_one_for_a_letter(self):
+        # A voice can earn a letter in the transcript and still be too thin to
+        # recognise next month. Measured: a 26-second sample lowered every
+        # later score by about 0.03.
+        self.assertGreater(diarize.MIN_PRINT_SECONDS, diarize.MIN_SPEAKER_SECONDS)
+
+    def test_a_short_voice_keeps_its_letter_and_its_audio(self):
+        rows = [said("A", 0, 26)]
+        self.assertEqual(diarize.worth_remembering(rows), set())
+        self.assertIn("A", diarize.print_ranges(rows))   # qn play still works
+
+
+class PlayingOneVoice(unittest.TestCase):
+    """`qn play <id> <letter>` plays what the voiceprint was built from."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="qn-playvoice-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+
+    def speakers(self, rows):
+        with open(os.path.join(self.dir, diarize.SPEAKERS_FILE), "w", encoding="utf-8") as h:
+            json.dump(rows, h)
+
+    def test_spans_come_back_in_seconds(self):
+        self.speakers([said("A", 90_000, 25)])
+        self.assertEqual(diarize.play_spans(self.dir, "A"), [(90.0, 115.0)])
+
+    def test_they_are_the_spans_the_voiceprint_used(self):
+        # The promise of this command: you hear what the roster heard.
+        rows = [said("A", 0, 20), said("A", 30_000, 15), said("B", 60_000, 40)]
+        self.speakers(rows)
+        ranges = diarize.print_ranges(rows)["A"]
+        self.assertEqual(diarize.play_spans(self.dir, "A"),
+                         [(start / 1000, end / 1000) for start, end in ranges])
+
+    def test_a_lower_case_letter_finds_the_voice(self):
+        self.speakers([said("A", 0, 25)])
+        self.assertEqual(diarize.play_spans(self.dir, "a"), [(0.0, 25.0)])
+
+    def test_an_unknown_letter_has_nothing_to_play(self):
+        self.speakers([said("A", 0, 25)])
+        self.assertEqual(diarize.play_spans(self.dir, "Z"), [])
+
+    def test_a_meeting_without_groups_has_nothing_to_play(self):
+        self.assertEqual(diarize.play_spans(self.dir, "A"), [])
+
+
+class ReadingVoiceprints(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def write(self, text):
+        with open(os.path.join(self.dir, diarize.PRINTS_FILE), "w", encoding="utf-8") as h:
+            h.write(text)
+
+    def test_no_file_means_no_prints(self):
+        self.assertEqual(diarize.read_prints(self.dir), {})
+
+    def test_a_damaged_file_is_ignored(self):
+        self.write("{ not json")
+        self.assertEqual(diarize.read_prints(self.dir), {})
+
+    def test_a_list_where_an_object_belongs_is_ignored(self):
+        self.write("[1, 2]")
+        self.assertEqual(diarize.read_prints(self.dir), {})
+
+    def test_a_good_file_reads_back(self):
+        self.write(json.dumps({"A": [0.5, -0.25], "B": [1.0, 0.0]}))
+        self.assertEqual(diarize.read_prints(self.dir), {"A": [0.5, -0.25], "B": [1.0, 0.0]})
+
+    def test_an_empty_vector_is_dropped(self):
+        self.write(json.dumps({"A": [], "B": [1.0]}))
+        self.assertEqual(diarize.read_prints(self.dir), {"B": [1.0]})
+
+    def test_a_vector_of_strings_is_dropped(self):
+        self.write(json.dumps({"A": ["loud"], "B": [1.0]}))
+        self.assertEqual(diarize.read_prints(self.dir), {"B": [1.0]})
 
 
 if __name__ == "__main__":

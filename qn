@@ -9,10 +9,13 @@
 #   qn approve <id>                           send a held meeting to Claude
 #   qn pending                                list meetings awaiting approval
 #   qn play <id> [MM:SS]                      hear what was actually said
+#   qn play <id> <letter>                     hear one voice, before you name it
 #   qn index                                  rebuild the search index
 #   qn vocab                                  show the words it has learned
 #   qn people                                 show who you meet, and add notes
 #   qn confirm <id> <letter> <name>           say who a voice really was
+#   qn voices [--sweep]                       show the voices it can recognise
+#   qn forget <name>                          stop recognising that voice
 #   qn prune [--older-than 30d]               delete old audio, keep the notes
 #   qn doctor                                 check the setup
 #   qn doctor --mic                           record a few seconds and listen
@@ -321,15 +324,27 @@ require_existing_words() {
 
 # ------------------------------------------------------------------ writing
 
+# Names the voices this meeting shares with earlier ones. Stdlib only, so it
+# runs on the system python: recognising a voice is arithmetic, and only the
+# building of a voiceprint needs the venv.
+match_voices() {
+  local work="$1"
+  [ -s "$work/voiceprints.json" ] || return 0
+  python3 "$HERE/lib/voices.py" "$NOTES_DIR" --match "$work" >/dev/null 2>&1 || \
+    warn "voice matching failed — the transcript is unaffected"
+}
+
 # Claude's guess at which letter is which person, and yours when you have said.
 # A guess is recorded as a guess. Only `qn confirm` writes (confirmed), because
 # only you were actually in the room.
 speaker_map() {
   local work="$1"
-  python3 - "$work" <<'PYEOF'
-import json, os, re, sys
+  python3 - "$work" "$HERE/lib" <<'PYEOF'
+import json, os, pathlib, re, sys
 
 work = sys.argv[1]
+sys.path.insert(0, sys.argv[2])
+import merge
 
 def read(path):
     try:
@@ -338,12 +353,12 @@ def read(path):
     except OSError:
         return ""
 
-# Anything you confirmed outranks anything Claude guessed.
-confirmed = {}
-for line in read(os.path.join(work, "confirmed.txt")).splitlines():
-    letter, _, name = line.partition("=")
-    if _ and letter.strip() and name.strip():
-        confirmed[letter.strip().upper()] = name.strip()
+# Anything you confirmed outranks what the roster matched, and the roster
+# outranks anything Claude guessed from the words alone. The `A=Marco` parsing
+# is merge.py's, so the frontmatter can never name a voice the transcript does
+# not, or the other way round.
+confirmed = merge.read_confirmed(pathlib.Path(work))
+matched = merge.read_matched(pathlib.Path(work))
 
 guesses = {}
 body = read(os.path.join(work, "summary.md"))
@@ -356,9 +371,11 @@ if section is not None:
             guesses[found.group("letter")] = found.group("name")
 
 entries = []
-for letter in sorted(set(confirmed) | set(guesses)):
+for letter in sorted(set(confirmed) | set(matched) | set(guesses)):
     if letter in confirmed:
         entries.append(f"{letter}: {confirmed[letter]} (confirmed)")
+    elif letter in matched:
+        entries.append(f"{letter}: {matched[letter]} (matched)")
     else:
         entries.append(f"{letter}: {guesses[letter]} (guess)")
 # json.dumps escapes anything that would break the frontmatter line.
@@ -440,7 +457,7 @@ process_recording() {
   fi
 
   local helper
-  for helper in lib/health.py lib/merge.py lib/vocab.py lib/people.py; do
+  for helper in lib/health.py lib/merge.py lib/vocab.py lib/people.py lib/voices.py; do
     if [ ! -f "$HERE/$helper" ]; then
       die "$HERE/$helper is missing — the audio is safe in $work"
     fi
@@ -494,6 +511,10 @@ for w in json.load(sys.stdin)["warnings"]:
     transcribe_track "$work" them
     transcribe_track "$work" me
   fi
+  # Who the roster recognises. Re-run on every rebuild, because the roster
+  # has learned since, and a voice it could not place last month may have a
+  # name now. It never touches a letter you confirmed yourself.
+  match_voices "$work"
   # Always re-merged: this is where `qn confirm` puts a name on a line.
   python3 "$HERE/lib/merge.py" "$work" > "$work/transcript.txt"
   # Not `-s`: merge.py prints a newline even with nothing to merge, so a
@@ -787,6 +808,48 @@ cmd_play() {
   rm -rf "$clipdir"
 }
 
+# Hear one voice on its own, before you name it. The `them` track only, and
+# the exact stretches the voiceprint used — so you hear what the roster heard,
+# including the case where those stretches hold two people.
+cmd_play_voice() {
+  local work letter spans filter seconds
+  work="$(resolve_recording "$1")"
+  letter="$(printf '%s' "$2" | tr '[:lower:]' '[:upper:]')"
+
+  [ -s "$work/them.m4a" ] || die "no audio in $(basename "$work") — pruning may have removed it"
+  [ -s "$work/speakers.json" ] || \
+    die "$(basename "$work") has no voice groups — rebuild it with 'diarize = yes'"
+
+  spans="$(python3 "$HERE/lib/diarize.py" "$work" --spans "$letter" 2>/dev/null || true)"
+  [ -n "$spans" ] || die "no voice $letter in $(basename "$work") — 'qn voices' lists them"
+
+  # One input, one filter: `aselect` keeps only the wanted stretches and
+  # `asetpts` closes the gaps, so the clip plays as continuous speech.
+  filter="$(printf '%s\n' "$spans" \
+              | awk '{printf "%sbetween(t\\,%s\\,%s)", (NR > 1 ? "+" : ""), $1, $2}')"
+  seconds="$(printf '%s\n' "$spans" | awk '{total += $2 - $1} END {printf "%d", total}')"
+
+  local clipdir clip
+  clipdir="$(mktemp -d -t qnvoice)"
+  clip="$clipdir/clip.wav"
+  if [ -n "${QN_DRY_RUN:-}" ]; then
+    printf 'ffmpeg -i %s -af aselect=%s,asetpts=N/SR/TB %s\n' "$work/them.m4a" "$filter" "$clip"
+    printf 'afplay %s\n' "$clip"
+    rm -rf "$clipdir"
+    return 0
+  fi
+
+  if ! ffmpeg -nostdin -v error -y -i "$work/them.m4a" \
+       -af "aselect='$filter',asetpts=N/SR/TB" "$clip"; then
+    rm -rf "$clipdir"
+    die "could not cut the audio for voice $letter"
+  fi
+
+  step "voice $letter — ${seconds}s, them track only"
+  afplay "$clip" || true
+  rm -rf "$clipdir"
+}
+
 # A held meeting keeps its audio because `qn approve` needs it. It no longer
 # does — approve rebuilds from the words, which pruning never deletes. So the
 # audio can go, but only if you say so, because the trade is yours to make:
@@ -964,6 +1027,24 @@ print(" ".join(sorted({str(r.get("speaker","")) for r in rows if r.get("speaker"
   printf '%s=%s\n' "$letter" "$name" >> "$work/confirmed.new"
   mv "$work/confirmed.new" "$work/confirmed.txt"
 
+  # A guess the roster made about this letter is now beside the point, and
+  # leaving it would show two names for one voice in the frontmatter.
+  if [ -s "$work/matched.txt" ]; then
+    grep -v "^$letter=" "$work/matched.txt" > "$work/matched.new" 2>/dev/null || true
+    mv "$work/matched.new" "$work/matched.txt"
+  fi
+
+  # The learning step. It reports what it did, including refusing to learn
+  # from a meeting you kept to yourself.
+  local learned
+  learned="$(python3 "$HERE/lib/voices.py" "$NOTES_DIR" --enrol "$work" "$letter" \
+               "$(read_consent "$work")" "$name" 2>/dev/null || true)"
+
+  # The roster just changed, so the voices you did NOT name are worth another
+  # look. One person is often split across letters: naming A frequently names
+  # B and C too, and the list stops asking about them.
+  match_voices "$work"
+
   python3 "$HERE/lib/merge.py" "$work" > "$work/transcript.new" \
     && mv "$work/transcript.new" "$work/transcript.txt"
 
@@ -978,7 +1059,27 @@ print(" ".join(sorted({str(r.get("speaker","")) for r in rows if r.get("speaker"
   fi
 
   step "Them $letter is $name, in $id"
+  if [ -n "$learned" ]; then step "$learned"; fi
   step "run 'qn --notes-only redo $id' to rewrite the notes with that name"
+}
+
+# The roster of voices, and the ones it heard but could not place.
+cmd_voices() {
+  python3 "$HERE/lib/voices.py" "$NOTES_DIR" --list
+}
+
+# Every stored voice scored against every voiceprint on disk. This is how
+# MATCH_THRESHOLD was set, and the only honest way to change it.
+cmd_voices_sweep() {
+  python3 "$HERE/lib/voices.py" "$NOTES_DIR" --sweep
+}
+
+# A voice you do not want remembered. The notes already written are not
+# touched: this stops future recognition, it does not erase the past.
+cmd_forget() {
+  local name="$1"
+  python3 "$HERE/lib/voices.py" "$NOTES_DIR" --forget "$name" || return 1
+  step "future meetings will not recognise that voice"
 }
 
 cmd_people() {
@@ -1140,6 +1241,14 @@ case "${1:-}:$#" in
   confirm:4)        cmd_confirm "$2" "$3" "$4"; exit $? ;;
   confirm:1|confirm:2|confirm:3)
                     die "usage: qn confirm <id> <letter> <name>" ;;
+  voices:1)         cmd_voices; exit $? ;;
+  voices:2)
+    case "$2" in
+      --sweep) cmd_voices_sweep; exit $? ;;
+    esac
+    ;;
+  forget:2)         cmd_forget "$2"; exit $? ;;
+  forget:1)         die "usage: qn forget <name>" ;;
   prune:1)          cmd_prune "$keep_days"; exit $? ;;
   doctor:1)         cmd_doctor; exit $? ;;
   doctor:2)
@@ -1155,10 +1264,12 @@ case "${1:-}:$#" in
   approve:2)        cmd_approve "$2"; exit $? ;;
   play:2)           cmd_play "$2" "00:00"; exit $? ;;
   play:3)
-    # Only a real timestamp makes this the play command. "qn play testing
-    # session" is a meeting, not a request to replay one.
+    # Only a real timestamp or a single voice letter makes this the play
+    # command. "qn play testing session" is a meeting, not a request to replay
+    # one, and "session" is not one character.
     case "$3" in
       [0-9]*:[0-9][0-9]) cmd_play "$2" "$3"; exit $? ;;
+      [A-Za-z])          cmd_play_voice "$2" "$3"; exit $? ;;
     esac
     ;;
   redo:1)           die "usage: qn redo <id>" ;;

@@ -115,6 +115,8 @@ qn index                        rebuild ~/Meetings/.index.db
 qn vocab                        rebuild and show the learned vocabulary
 qn people                       rebuild and show the roster of who you meet
 qn confirm <id> <letter> <name> say who a voice group really was
+qn voices                       show the recognisable voices, and the unnamed
+qn forget <name>                drop a voice from the roster
 qn prune [--older-than 30d]     delete audio older than N days, keep the notes
 qn doctor                       check dependencies and permissions
 qn doctor --mic                 record a few seconds and measure them
@@ -228,8 +230,9 @@ labels a `them` line `Them A`, `Them B` by longest overlap. The `me` track is
 never relabelled; it is already its own file.
 
 The labels are a hint for Claude, never an identity. `prompt.md` states that
-the words win when they disagree with the letter. Nothing in this tool converts
-a letter into a name automatically.
+the words win when they disagree with the letter. Grouping alone never becomes
+a name: the only route from a letter to a person is a name you confirmed, here
+or in an earlier meeting. See **Voice recognition** below.
 
 A cluster under `MIN_SPEAKER_SECONDS` gets no letter, and its lines stay
 `Them`. At most `MAX_SPEAKERS` letters are handed out, busiest voice first.
@@ -240,15 +243,92 @@ the name instead of the letter, so a `qn redo` keeps the answer. The letter is
 checked against `speakers.json`, not the transcript, so a confirmation can be
 corrected after it has already replaced the label.
 
+## Voice recognition
+
+`diarize.py` also writes `voiceprints.json`: one vector per letter, built from
+up to `PRINT_SECONDS` of that letter's longest segments. It is a separate file
+because `speakers.json` holds one row per time segment.
+
+Grouping and recognition use **different models**. `embedding.onnx` clusters
+segments inside one meeting; `voiceprint.onnx` produces the vectors compared
+across meetings. Keeping them apart also means the clustering keeps the
+threshold it was tuned with. `voiceprint.onnx` is optional: without it
+`voiceprints.json` is never written, and the transcript is unchanged.
+
+Six models were measured on nine real recordings, four with a speaker
+identified away from the audio. Same audio, same groups, same arithmetic:
+
+| model | size | worst same person | best different people | gap |
+|---|---|---|---|---|
+| wespeaker CAM++ voxceleb | 29 MB | 0.879 | 0.931 | −0.051 |
+| wespeaker CAM++_LM | 29 MB | 0.793 | 0.933 | −0.140 |
+| wespeaker resnet293_LM | 114 MB | 0.980 | 0.973 | +0.007 |
+| 3dspeaker eres2netv2 | 71 MB | 0.744 | 0.553 | +0.191 |
+| 3dspeaker campplus zh_en | 28 MB | 0.826 | 0.614 | +0.212 |
+| **nemo titanet_large** | 101 MB | 0.755 | 0.406 | **+0.349** |
+
+A negative gap means no threshold is both safe and useful. The clustering
+model is the worst of the six at recognition: it rated two colleagues more
+alike than one colleague against himself. Size does not predict quality.
+`MATCH_THRESHOLD = 0.65` sits about two thirds from 0.406 up to 0.755, which
+leans towards saying nothing rather than saying a name.
+
+`MAX_SAMPLES` keeps the newest ten samples of a person. Not for space — fifty
+cost 52 KB and match in 0.1 ms — but for drift, since every sample weighs the
+same in the mean. `enrol_from` reports when a sample was dropped for being
+older than the ten kept, so a confirm never claims a success it did not have.
+
+A voice must talk `MIN_PRINT_SECONDS` before it gets a print. Below that it
+keeps its letter, keeps its audio for `qn play`, and is never offered for
+naming. The floor is enforced in three places — when prints are built, in
+`pending`, and in `enrol_from` — because a file written by an earlier version
+still holds prints for short voices.
+
+`lib/voices.py` keeps the roster in `<notes>/.voices.json`:
+
+```json
+{"version": 1, "people": {"Aisha": [{"from": "<id>", "voice": "A", "vector": []}]}}
+```
+
+One entry per voice, keyed by meeting **and** letter. The grouping splits one
+person across letters, so a single meeting can hold three good samples of the
+same colleague. An entry with no `voice` comes from the first version and reads
+as an empty letter. A person's stored voice is the mean of their entries, and
+`match` is cosine similarity against that mean — the same figure sherpa-onnx's
+`SpeakerEmbeddingManager` computes, written out so the module stays
+stdlib-only and its tests need no model.
+
+`qn confirm` enrols the voiceprint after writing `confirmed.txt`, then re-runs
+the match over the same meeting. Naming A therefore names B and C when they are
+the same person, and they leave the waiting list. Enrolling under a new name
+removes that meeting-and-letter entry from whoever held it, so a correction
+stops the mistake voting. A meeting whose `consent` is not `full` enrols
+nothing, and `qn confirm` says so.
+
+Every rebuild re-runs the match and rewrites `matched.txt` from scratch, never
+adding to it: after `qn forget`, the next rebuild must drop that name. A letter
+present in `confirmed.txt` is skipped, so re-matching cannot undo your answer.
+
+`qn voices` lists the roster and the voiceprints with no name. `qn forget
+<name>` drops a person. Neither touches a note already written.
+
+`qn play <id> <letter>` plays one voice group from `them.m4a` alone, using the
+spans `print_ranges` chose for the voiceprint, joined with `aselect` and
+`asetpts`. It is the audio the roster learned from, so a bad cluster can be
+heard rather than guessed at. The dispatch reads a single letter as a voice and
+anything longer as a meeting title; `<MM:SS>` keeps its existing meaning of
+both tracks mixed from that moment.
+
 Every note carries what it knows:
 
 ```yaml
-speaker_map: ["A: Marco (confirmed)", "B: Lena (guess)"]
+speaker_map: ["A: Marco (confirmed)", "B: Aisha (matched)", "C: Lena (guess)"]
 ```
 
 `(guess)` comes from the `## Speakers` section Claude writes, which `qn` lifts
-out of the body into the frontmatter. `(confirmed)` comes from `qn confirm` and
-always outranks a guess. Only a confirmation names a transcript line.
+out of the body into the frontmatter, and it never names a transcript line.
+`(matched)` comes from the roster. `(confirmed)` comes from `qn confirm` and
+outranks both. `merge.py` applies the same order to the transcript itself.
 
 Everything is optional. Without `make diarize` the models are absent, the step
 is skipped, and the transcript is byte-identical to one produced without it.

@@ -206,7 +206,7 @@ calendar, so a person typed them.
 can group it by voice:
 
 ```sh
-make diarize        # 49 MB environment, 28 MB of models, both MIT
+make diarize        # 49 MB environment, 130 MB of models, all MIT
 ```
 
 Then in your settings file:
@@ -218,11 +218,13 @@ diarize = yes
 The transcript gains `Them A:`, `Them B:` labels, and Claude uses them
 alongside the roster to work out who said what.
 
-**These letters are a hint, not an identity, and the tool will not turn them
-into names by itself.** Measured on a real 26-minute standup, the clustering
-put a question and its answer in the same group — two people, one letter.
-`prompt.md` tells Claude to believe the words over the letter when they
-disagree, so a bad group can be overruled. An automatic name could not be.
+**These letters are a hint, not an identity.** Measured on a real 26-minute
+standup, the clustering put a question and its answer in the same group — two
+people, one letter. `prompt.md` tells Claude to believe the words over the
+letter when they disagree, so a bad group can be overruled.
+
+Grouping on its own never produces a name. The only way a letter becomes a
+person is a name **you** gave it, here or in an earlier meeting.
 
 It costs about seven minutes of processing per hour of audio, on top of the
 transcript. That is why it is off by default.
@@ -239,14 +241,106 @@ From then on that voice is **Marco** in the transcript, not `Them A`. Your
 answer is kept beside the audio, so `qn redo` never loses it, and you can
 correct it by confirming the same letter again.
 
+### Hearing a voice before you name it
+
+A letter tells you nothing about who it is. Listen first:
+
+```sh
+./qn play 2026-08-24-1500-sdk-standup B
+```
+
+That plays about 30 seconds of **that voice only**, from the `them` track, with
+your own microphone left out and the silences closed up. It is the same audio
+the voiceprint was built from, so you hear exactly what the tool heard — and if
+those 30 seconds turn out to hold two people talking over each other, you have
+found why a match went wrong.
+
+It also tells you if the voice already has a name:
+
+```
+  voice A is Ravi — 30s, them track only
+  voice B, unnamed — 30s, them track only
+```
+
+`qn play <id> <MM:SS>` still exists and is a different thing: it mixes both
+tracks and plays the meeting from that moment, which is what you want to check
+a quote rather than a voice.
+
+Pruning deletes the audio, so this works only while the recording is still
+there.
+
+### Recognising the same voice next time
+
+A confirmation also teaches the tool what that person sounds like. The voice
+joins a roster in `~/Meetings/.voices.json`, and the next meeting recognises
+them without being asked:
+
+```sh
+qn voices
+```
+
+```
+  known voices
+    Aisha    4 samples  last 2026-09-01
+    Ravi   2 samples  last 2026-09-02
+
+  waiting to be named
+    2026-08-31-1507-sdk-standup  B  6 min of talking
+
+  name one with:  qn confirm <id> <letter> "<name>"
+```
+
+Each confirmation adds one sample. A person's stored voice is the average of
+theirs. Two or three samples is where it becomes reliable. After about ten it
+stops improving. The model itself never changes — only the roster does.
+
+**Name every voice the list offers.** The grouping often splits one person
+across several letters. Naming each one gives that person another sample, which
+helps. Naming A also re-checks B and C, so they usually leave the list on their
+own.
+
+**The list never offers a voice worth under a minute.** A short sample makes
+recognition worse, not better. Measured: a 26-second sample of a colleague,
+stored beside a good one, pulled every later score down by about 0.03. A
+248-second sample of the same person pulled them up by 0.08. So `qn voices`
+shows only voices above 60 seconds, and `qn confirm` refuses the rest:
+
+```
+voice D talked for 0m 56s — too little to remember
+the transcript is named, the roster is unchanged
+```
+
+The transcript still gets the name. Only the roster stays out of it.
+
+Recognition uses a **second model**, separate from the one that does the
+grouping. They are different jobs. Measured on nine real meetings, the grouping
+model scored two different colleagues *more* alike than it scored one colleague
+recorded on two different days — it would have put the wrong name on the wrong
+action item. Six models were compared; the numbers are in the `MATCH_THRESHOLD`
+comment in `lib/voices.py`, and `qn voices --sweep` reproduces them on your own
+recordings.
+
+A voice you would rather not keep:
+
+```sh
+qn forget "Acme customer"
+```
+
+That stops future recognition. Notes already written are untouched.
+
+**A meeting you kept private teaches nothing.** `qn confirm` refuses to store
+a voiceprint from a `local` meeting and says so. You held that conversation
+back; a stored voice would outlive the choice.
+
 Every note records what it knows in its frontmatter:
 
 ```yaml
-speaker_map: ["A: Marco (confirmed)", "B: Lena (guess)"]
+speaker_map: ["A: Marco (confirmed)", "B: Aisha (matched)", "C: Lena (guess)"]
 ```
 
-`(guess)` is Claude reading the conversation. `(confirmed)` is you. Only a
-confirmation puts a name on a transcript line.
+Three sources, weakest last. `(guess)` is Claude reading the conversation, and
+it never leaves the frontmatter. `(matched)` is the roster recognising a voice
+you named before. `(confirmed)` is you, and it overrules both.
 
 ## How it works
 
@@ -286,6 +380,7 @@ mishearings in the notes above it, so a wrong correction is always checkable.
 | `lib/people.py` | Keeps the roster of who you meet, and what you wrote about them |
 | `lib/names.py` | Reads a person out of a calendar invite's email address |
 | `lib/diarize.py` | Optional. Groups the `them` track by voice |
+| `lib/voices.py` | Optional. Remembers a voice, so the next meeting knows it |
 | `mcp/` | The search index and the MCP server |
 | `test/` | Every test, and the harness that runs them |
 

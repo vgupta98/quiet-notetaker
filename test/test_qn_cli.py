@@ -238,5 +238,94 @@ class MeetingIdsAreUnique(unittest.TestCase):
             self.assertEqual(done.stdout.strip(), "2026-08-20-1030-sync-2")
 
 
+class VoiceRosterDispatch(unittest.TestCase):
+    """`qn voices` and `qn forget` must not be mistaken for meeting titles."""
+
+    def setUp(self):
+        self.notes = tempfile.mkdtemp()
+
+    def test_voices_lists_an_empty_roster_instead_of_recording(self):
+        done = run_qn("voices", notes=self.notes)
+        self.assertEqual(done.returncode, 0)
+        self.assertIn("nobody yet", done.stdout)
+
+    def test_forget_without_a_name_explains_itself(self):
+        done = run_qn("forget", notes=self.notes)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("usage: qn forget", done.stdout + done.stderr)
+
+    def test_forgetting_an_unknown_voice_fails_loudly(self):
+        done = run_qn("forget", "Nobody", notes=self.notes)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("no voice on file", done.stdout + done.stderr)
+
+    def test_a_meeting_titled_voices_review_still_records(self):
+        # The dispatch matches on the argument count, so more words mean a
+        # meeting. QN_DRY_RUN stops it before any audio device is opened.
+        done = run_qn("voices", "review", notes=self.notes)
+        self.assertIn("id=", done.stdout)
+
+
+class PlayDispatch(unittest.TestCase):
+    """A voice letter must not be mistaken for a meeting title, or a time."""
+
+    def setUp(self):
+        self.notes = tempfile.mkdtemp()
+
+    def test_a_single_letter_asks_for_a_voice(self):
+        done = run_qn("play", "no-such-meeting", "B", notes=self.notes)
+        # It got as far as looking for the recording, so it took the letter.
+        self.assertIn("no-such-meeting", done.stdout + done.stderr)
+
+    def test_a_word_is_still_a_meeting_title(self):
+        done = run_qn("play", "testing", "session", notes=self.notes)
+        self.assertIn("id=", done.stdout)
+
+    def test_a_timestamp_still_plays_the_meeting(self):
+        done = run_qn("play", "no-such-meeting", "01:37", notes=self.notes)
+        self.assertIn("no-such-meeting", done.stdout + done.stderr)
+
+
+class SpeakerMapRanksItsSources(unittest.TestCase):
+    """Confirmed beats matched, matched beats Claude's guess."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+
+    def speaker_map(self):
+        # The function is lifted out of `qn` on its own, so it has no $HERE.
+        # It needs one: the `A=Marco` parsing is merge.py's, not a copy.
+        return call_helper("speaker_map", str(self.dir), env={"HERE": ROOT}).strip()
+
+    def test_nothing_known_is_an_empty_list(self):
+        self.assertEqual(self.speaker_map(), "[]")
+
+    def test_a_match_is_marked_as_a_match(self):
+        (self.dir / "matched.txt").write_text("A=Aisha\n")
+        self.assertEqual(self.speaker_map(), '["A: Aisha (matched)"]')
+
+    def test_your_confirmation_outranks_the_match(self):
+        (self.dir / "matched.txt").write_text("A=Aisha\n")
+        (self.dir / "confirmed.txt").write_text("A=Tom\n")
+        self.assertEqual(self.speaker_map(), '["A: Tom (confirmed)"]')
+
+    def test_a_match_outranks_a_guess_from_the_words(self):
+        (self.dir / "matched.txt").write_text("A=Aisha\n")
+        (self.dir / "summary.md").write_text("## Speakers\n- A: Marco\n")
+        self.assertEqual(self.speaker_map(), '["A: Aisha (matched)"]')
+
+    def test_a_guess_still_shows_when_no_voice_was_matched(self):
+        (self.dir / "summary.md").write_text("## Speakers\n- B: Marco\n")
+        self.assertEqual(self.speaker_map(), '["B: Marco (guess)"]')
+
+    def test_every_source_appears_at_its_own_rank(self):
+        (self.dir / "confirmed.txt").write_text("A=Tom\n")
+        (self.dir / "matched.txt").write_text("B=Aisha\n")
+        (self.dir / "summary.md").write_text("## Speakers\n- C: Marco\n")
+        self.assertEqual(
+            self.speaker_map(),
+            '["A: Tom (confirmed)", "B: Aisha (matched)", "C: Marco (guess)"]')
+
+
 if __name__ == "__main__":
     unittest.main()

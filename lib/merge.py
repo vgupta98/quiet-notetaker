@@ -19,8 +19,13 @@ TRACKS = (("them", "Them"), ("me", "Me"))
 SPEAKERS_FILE = "speakers.json"
 
 # What you said a voice really was. You were in the room, so this outranks
-# every guess, and it is the only thing that puts a name on a transcript line.
+# everything else here.
 CONFIRMED_FILE = "confirmed.txt"
+
+# Who the voice roster recognised, from a name you confirmed in an earlier
+# meeting. Second-best evidence, and kept in its own file so that re-matching
+# can never overwrite an answer you gave yourself.
+MATCHED_FILE = "matched.txt"
 
 # One speaker talking for two minutes is one turn to whisper and a wall of text
 # to a reader. A pause this long is where a paragraph should break.
@@ -40,9 +45,8 @@ def read_voices(recording_dir: pathlib.Path) -> list[tuple[int, int, str]]:
             for row in rows if {"start_ms", "end_ms", "speaker"} <= set(row)]
 
 
-def read_confirmed(recording_dir: pathlib.Path) -> dict[str, str]:
-    """`A=Marco` lines written by `qn confirm`. Empty when you never did."""
-    path = recording_dir / CONFIRMED_FILE
+def read_named(path: pathlib.Path) -> dict[str, str]:
+    """`A=Marco` lines from one file. Empty when it is absent or unreadable."""
     if not path.exists():
         return {}
     try:
@@ -56,6 +60,22 @@ def read_confirmed(recording_dir: pathlib.Path) -> dict[str, str]:
         if marker and len(letter) == 1 and letter.isalpha() and name:
             named[letter] = name
     return named
+
+
+def read_confirmed(recording_dir: pathlib.Path) -> dict[str, str]:
+    """What you told `qn confirm`. Empty when you never did."""
+    return read_named(recording_dir / CONFIRMED_FILE)
+
+
+def read_matched(recording_dir: pathlib.Path) -> dict[str, str]:
+    """What the voice roster recognised. Empty when it recognised nobody."""
+    return read_named(recording_dir / MATCHED_FILE)
+
+
+def names_for(recording_dir: pathlib.Path) -> dict[str, str]:
+    """The name for each letter. You outrank the roster; Claude's guess stays
+    in the frontmatter, because it reads words rather than hearing a voice."""
+    return {**read_matched(recording_dir), **read_confirmed(recording_dir)}
 
 
 def voice_at(voices: list[tuple[int, int, str]], start: int, end: int) -> str | None:
@@ -76,7 +96,7 @@ def read_segments(recording_dir: pathlib.Path) -> list[tuple[int, int, str, str]
     """Every segment from both tracks, as (start_ms, end_ms, speaker, text)."""
     segments: list[tuple[int, int, str, str]] = []
     voices = read_voices(recording_dir)
-    confirmed = read_confirmed(recording_dir)
+    named = names_for(recording_dir)
     for track, speaker in TRACKS:
         path = recording_dir / f"{track}.json"
         if not path.exists():
@@ -92,9 +112,9 @@ def read_segments(recording_dir: pathlib.Path) -> list[tuple[int, int, str, str]
                 if track == "them" and voices:
                     found = voice_at(voices, start, end)
                     if found is not None:
-                        # A confirmed voice becomes the person. An unconfirmed
-                        # one stays a letter, which is a hint and says so.
-                        label = confirmed.get(found, f"{speaker} {found}")
+                        # A named voice becomes the person. An unnamed one
+                        # stays a letter, which is a hint and says so.
+                        label = named.get(found, f"{speaker} {found}")
                 segments.append((start, end, label, text))
     return segments
 
