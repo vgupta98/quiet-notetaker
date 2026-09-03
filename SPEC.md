@@ -263,8 +263,11 @@ up to `PRINT_SECONDS` of that letter's longest segments. It is a separate file
 because `speakers.json` holds one row per time segment.
 
 `voiceprint.onnx` does both jobs — grouping inside a meeting and recognition
-across them. `embedding.onnx` remains only because sherpa will not run its
-segmentation without an embedding model attached. Its output is unused.
+across them. `embedding.onnx` remains because sherpa will not run its
+segmentation without an embedding model, and which one it gets moves the span
+boundaries: on a 26-minute standup it produced 318 spans against
+`voiceprint.onnx`'s 240, in half the time. Its groups are discarded; its
+boundaries are not.
 `voiceprint.onnx` is optional: without it there is no grouping and no
 `voiceprints.json`, and the transcript reads plain `Them` throughout.
 

@@ -79,11 +79,14 @@ SAMPLE_RATE = 16000
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 SEGMENTATION_MODEL = "segmentation.onnx"
+
+# Its groups are discarded, but it is not spare: sherpa will not segment without
+# an embedding model, and which one it gets moves the span boundaries. Handing
+# it voiceprint.onnx gave 240 spans where this gives 318, and took twice as long.
 EMBEDDING_MODEL = "embedding.onnx"
 
-# One model does both jobs: grouping inside a meeting, and recognising the same
-# person in the next one. `embedding.onnx` above is kept only because sherpa
-# will not segment without one, and its groups are thrown away. See SPEC.md.
+# Does both real jobs: grouping inside a meeting, and recognising the same
+# person in the next one. See SPEC.md.
 VOICEPRINT_MODEL = "voiceprint.onnx"
 
 SPEAKERS_FILE = "speakers.json"
