@@ -511,3 +511,7 @@ CLI tests against generated fixtures. It never touches your real `~/Meetings`.
 
 macOS 15 or later, Apple Silicon. Microphone capture through ScreenCaptureKit
 is new in macOS 15, and the binaries are built for `arm64`.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
