@@ -50,18 +50,22 @@ MERGE_SIMILARITY = 0.50
 MIN_DURATION_ON = 0.5
 MIN_DURATION_OFF = 0.5
 
-# A cluster that never says much is clustering noise, not a colleague. The same
-# sweep produced twenty groups holding one short line each.
+# A group that never says much is not a colleague. Weighed twice: on the spans
+# that formed the group, and again in `label` on the spans it kept, because
+# `assign` can move spans out of it. Somebody who says ten seconds in an hour
+# gets no letter — measured, and the reason Ravi is absent from one of the
+# three meetings in SPEC.md.
 MIN_SPEAKER_SECONDS = 20.0
 
-# How much of a voice to feed the embedding model. The vector stops moving
-# well before this, and `them.m4a` is a mixdown, so more audio mostly means
-# more chances to swallow somebody talking over the top.
+# How much of a voice to store for the roster. The vector stops moving well
+# before this, and `them.m4a` is a mixdown, so more audio mostly means more
+# chances to swallow somebody talking over the top.
 PRINT_SECONDS = 30.0
 
 # Talking time needed before a voice is worth remembering. A 26-second sample
-# cost about 0.03 on every later score. Below this a voice keeps its letter
-# and its audio, but is never offered for naming.
+# cost about 0.03 on every later score, measured before the grouping was
+# rebuilt. Below this a voice keeps its letter and its audio, but is never
+# offered for naming.
 MIN_PRINT_SECONDS = 60.0
 
 # Both models run on one core unless told otherwise. Measured on twelve cores:
