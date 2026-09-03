@@ -67,6 +67,11 @@ PRINT_SECONDS = 30.0
 # and its audio, but is never offered for naming.
 MIN_PRINT_SECONDS = 60.0
 
+# Both models run on one core unless told otherwise. Measured on twelve cores:
+# four threads cut segmentation from 6.6s to 3.1s and the embedding pass from
+# 12.8s to 4.1s. Eight threads bought nothing.
+THREADS = 4
+
 # What `to_wav` produces, and what both models expect.
 SAMPLE_RATE = 16000
 
@@ -75,10 +80,9 @@ LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 SEGMENTATION_MODEL = "segmentation.onnx"
 EMBEDDING_MODEL = "embedding.onnx"
 
-# Recognition needs its own model. `embedding.onnx` groups well but cannot
-# tell colleagues apart across meetings: it scored two different people 0.931
-# against one person's 0.923. Separate models also keep the clustering
-# threshold valid when one of them changes. See SPEC.md.
+# One model does both jobs: grouping inside a meeting, and recognising the same
+# person in the next one. `embedding.onnx` above is kept only because sherpa
+# will not segment without one, and its groups are thrown away. See SPEC.md.
 VOICEPRINT_MODEL = "voiceprint.onnx"
 
 SPEAKERS_FILE = "speakers.json"
@@ -143,8 +147,9 @@ def segments_from(samples) -> list[tuple[float, float]]:
     config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
         segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
             pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
-                model=segmentation)),
-        embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=embedding),
+                model=segmentation), num_threads=THREADS),
+        embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+            model=embedding, num_threads=THREADS),
         clustering=sherpa_onnx.FastClusteringConfig(num_clusters=-1, threshold=THRESHOLD),
         min_duration_on=MIN_DURATION_ON,
         min_duration_off=MIN_DURATION_OFF)
@@ -309,7 +314,7 @@ def extractor():
         import sherpa_onnx
     except ImportError:
         return None
-    config = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=model)
+    config = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=model, num_threads=THREADS)
     return sherpa_onnx.SpeakerEmbeddingExtractor(config) if config.validate() else None
 
 
