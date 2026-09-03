@@ -208,7 +208,9 @@ def cluster(vectors: list[list[float]], seconds: list[float]) -> list[list[int]]
         members[left] += members[right]
         del members[right]
 
-    talked = lambda group: sum(seconds[index] for index in group)
+    def talked(group):
+        return sum(seconds[index] for index in group)
+
     kept = [sorted(group) for group in members.values()
             if talked(group) >= MIN_SPEAKER_SECONDS]
     return sorted(kept, key=lambda group: (-talked(group), group[0]))
@@ -223,34 +225,35 @@ def assign(vectors: list[list[float]], groups: list[list[int]]) -> list[int | No
     centres = [centre([unit(vectors[index]) for index in group]) for group in groups]
     placed: list[int | None] = []
     for vector in vectors:
-        scores = [similarity(unit(vector), middle) for middle in centres]
-        best = max(range(len(scores)), key=scores.__getitem__) if scores else None
-        placed.append(best if best is not None
-                      and scores[best] >= MERGE_SIMILARITY else None)
+        point = unit(vector)
+        scores = [similarity(point, middle) for middle in centres]
+        best = max(scores, default=0.0)
+        placed.append(scores.index(best) if best >= MERGE_SIMILARITY else None)
     return placed
 
 
 def label(segments: list[tuple[float, float, int]]) -> list[dict]:
-    """Turn cluster numbers into A, B, C, busiest voice first.
+    """Turn group numbers into A, B, C, busiest voice first.
 
-    A quiet cluster gets no letter at all. Its lines stay plain `Them`, which
-    is the honest answer when there is not enough voice to group on.
+    A quiet group gets no letter at all. `cluster` weighs the same rule, but on
+    the spans that decided the group; `assign` can move spans out of it, so the
+    total is measured again on what was actually kept.
     """
     talking: dict[int, float] = {}
-    for start, end, cluster in segments:
-        talking[cluster] = talking.get(cluster, 0.0) + (end - start)
+    for start, end, group in segments:
+        talking[group] = talking.get(group, 0.0) + (end - start)
 
-    ranked = [cluster for cluster, seconds in
+    ranked = [group for group, seconds in
               sorted(talking.items(), key=lambda item: (-item[1], item[0]))
               if seconds >= MIN_SPEAKER_SECONDS][:MAX_SPEAKERS]
-    letters = {cluster: LETTERS[position] for position, cluster in enumerate(ranked)}
+    letters = {group: LETTERS[position] for position, group in enumerate(ranked)}
 
     out = []
-    for start, end, cluster in segments:
-        if cluster in letters:
+    for start, end, group in segments:
+        if group in letters:
             out.append({"start_ms": int(start * 1000),
                         "end_ms": int(end * 1000),
-                        "speaker": letters[cluster]})
+                        "speaker": letters[group]})
     return out
 
 
