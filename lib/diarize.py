@@ -54,9 +54,6 @@ MIN_DURATION_OFF = 0.5
 # sweep produced twenty groups holding one short line each.
 MIN_SPEAKER_SECONDS = 20.0
 
-# More than this many voices in one call and the labels stop helping a reader.
-MAX_SPEAKERS = 6
-
 # How much of a voice to feed the embedding model. The vector stops moving
 # well before this, and `them.m4a` is a mixdown, so more audio mostly means
 # more chances to swallow somebody talking over the top.
@@ -250,7 +247,7 @@ def label(segments: list[tuple[float, float, int]]) -> list[dict]:
 
     ranked = [group for group, seconds in
               sorted(talking.items(), key=lambda item: (-item[1], item[0]))
-              if seconds >= MIN_SPEAKER_SECONDS][:MAX_SPEAKERS]
+              if seconds >= MIN_SPEAKER_SECONDS][:len(LETTERS)]
     letters = {group: LETTERS[position] for position, group in enumerate(ranked)}
 
     out = []

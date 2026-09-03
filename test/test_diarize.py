@@ -47,10 +47,16 @@ class Labelling(unittest.TestCase):
         self.assertEqual(diarize.label([talk(1, just_under)]), [])
         self.assertEqual(len(diarize.label([talk(1, diarize.MIN_SPEAKER_SECONDS)])), 1)
 
-    def test_too_many_voices_are_capped(self):
-        segments = [talk(n, 100 - n, at=n * 200) for n in range(diarize.MAX_SPEAKERS + 4)]
+    def test_every_real_voice_gets_a_letter(self):
+        # Ten people who each spoke for long enough are ten names, not six.
+        segments = [talk(n, 100 - n, at=n * 200) for n in range(10)]
         letters = {row["speaker"] for row in diarize.label(segments)}
-        self.assertEqual(len(letters), diarize.MAX_SPEAKERS)
+        self.assertEqual(len(letters), 10)
+
+    def test_the_alphabet_is_the_only_cap(self):
+        segments = [talk(n, 100, at=n * 200) for n in range(len(diarize.LETTERS) + 3)]
+        letters = {row["speaker"] for row in diarize.label(segments)}
+        self.assertEqual(len(letters), len(diarize.LETTERS))
 
     def test_no_segments_means_no_labels(self):
         self.assertEqual(diarize.label([]), [])

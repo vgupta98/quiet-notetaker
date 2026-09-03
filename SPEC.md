@@ -243,8 +243,8 @@ and merged while they stay `MERGE_SIMILARITY` alike. A group under
 `MIN_SPEAKER_SECONDS` is dropped. Every span, long or short, then joins the
 group it most resembles — but only if it reaches `MERGE_SIMILARITY`. A span that
 reaches nothing keeps the plain `Them` label, which is the honest answer for a
-two-second reply that could be anybody. At most `MAX_SPEAKERS` letters are
-handed out, busiest voice first.
+two-second reply that could be anybody. Letters go out busiest voice first,
+and every group that survives gets one — the alphabet is the only cap.
 
 Short spans are the reason for the split. Their vectors resemble each other more
 than they resemble their own speaker, so left in the clustering they form a junk
