@@ -229,13 +229,26 @@ writes `speakers.json` into the recording directory. `merge.py` reads it and
 labels a `them` line `Them A`, `Them B` by longest overlap. The `me` track is
 never relabelled; it is already its own file.
 
+sherpa finds where each stretch of talking starts and stops. The grouping is
+ours. Its own clustering is discarded, and `THRESHOLD` stays only because it
+shapes those boundaries.
+
 The labels are a hint for Claude, never an identity. `prompt.md` states that
 the words win when they disagree with the letter. Grouping alone never becomes
 a name: the only route from a letter to a person is a name you confirmed, here
 or in an earlier meeting. See **Voice recognition** below.
 
-A cluster under `MIN_SPEAKER_SECONDS` gets no letter, and its lines stay
-`Them`. At most `MAX_SPEAKERS` letters are handed out, busiest voice first.
+Grouping runs in three steps. Spans of `RELIABLE_SECONDS` or more are measured
+and merged while they stay `MERGE_SIMILARITY` alike. A group under
+`MIN_SPEAKER_SECONDS` is dropped. Every span, long or short, then joins the
+group it most resembles — but only if it reaches `MERGE_SIMILARITY`. A span that
+reaches nothing keeps the plain `Them` label, which is the honest answer for a
+two-second reply that could be anybody. At most `MAX_SPEAKERS` letters are
+handed out, busiest voice first.
+
+Short spans are the reason for the split. Their vectors resemble each other more
+than they resemble their own speaker, so left in the clustering they form a junk
+group that swallows everybody's brief replies. They get a seat, never a vote.
 
 `qn confirm <id> <letter> <name>` records who a voice was, in
 `confirmed.txt` beside the audio as `A=Marco`. `merge.py` reads it and writes
@@ -249,11 +262,11 @@ corrected after it has already replaced the label.
 up to `PRINT_SECONDS` of that letter's longest segments. It is a separate file
 because `speakers.json` holds one row per time segment.
 
-Grouping and recognition use **different models**. `embedding.onnx` clusters
-segments inside one meeting; `voiceprint.onnx` produces the vectors compared
-across meetings. Keeping them apart also means the clustering keeps the
-threshold it was tuned with. `voiceprint.onnx` is optional: without it
-`voiceprints.json` is never written, and the transcript is unchanged.
+`voiceprint.onnx` does both jobs — grouping inside a meeting and recognition
+across them. `embedding.onnx` remains only because sherpa will not run its
+segmentation without an embedding model attached. Its output is unused.
+`voiceprint.onnx` is optional: without it there is no grouping and no
+`voiceprints.json`, and the transcript reads plain `Them` throughout.
 
 Six models were measured on nine real recordings, four with a speaker
 identified away from the audio. Same audio, same groups, same arithmetic:
@@ -272,6 +285,31 @@ model is the worst of the six at recognition: it rated two colleagues more
 alike than one colleague against himself. Size does not predict quality.
 `MATCH_THRESHOLD = 0.65` sits about two thirds from 0.406 up to 0.755, which
 leans towards saying nothing rather than saying a name.
+
+### Measuring the grouping
+
+Three meetings were labelled by ear, blind to the letters: 137 segments named,
+mixed and unsure ones excluded rather than guessed. One set the constants; two
+were labelled after they were frozen.
+
+| meeting | role | today | with `MERGE_SIMILARITY` |
+|---|---|---|---|
+| 2026-09-03 standup | tuning | 73.7% | 100% |
+| 2026-08-25 backlog | held out | 85.5% | 100% |
+| 2026-09-01 standup | held out | 60.0% | 100% |
+
+Purity is generous to the old design: every letter is allowed to be renamed to
+whichever person appears in it most. The old grouping still lost, because it
+split each person across several letters and mixed several people into one.
+
+`0.50` was never fitted to the held-out meetings. On the first the closest two
+people scored 0.421 and one person at worst 0.532; on the second, 0.370 and
+0.591. The gap held both times.
+
+The floor earns its place on the spans a person cannot judge either. Five clips
+were too brief to identify by ear; not one reached 0.50, and they averaged
+0.269 against 0.685 for the clips that were identifiable. Without the floor all
+five would have been given a name.
 
 `MAX_SAMPLES` keeps the newest ten samples of a person. Not for space — fifty
 cost 52 KB and match in 0.1 ms — but for drift, since every sample weighs the

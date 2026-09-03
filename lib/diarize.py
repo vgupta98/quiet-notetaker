@@ -10,9 +10,12 @@ are already labelled. Only `them` is a mixdown of everyone else.
 go in `voiceprints.json` instead, because a vector per time segment would make
 that file a hundred times bigger for no reader.
 
-This never names anybody. Measured on a real standup, the clustering put a
-question and its answer in one group. A wrong name is worse than "Them", so
-naming is left to `voices.py`, which only repeats a name you confirmed.
+The grouping is ours, not sherpa's. sherpa finds where each stretch of talking
+starts and stops; we measure those stretches and group them here. Its own
+clustering is discarded — see THRESHOLD.
+
+This never names anybody. A wrong name is worse than "Them", so naming is left
+to `voices.py`, which only repeats a name you confirmed.
 
 Optional throughout: without `make diarize` this exits quietly.
 """
@@ -20,16 +23,28 @@ Optional throughout: without `make diarize` this exits quietly.
 from __future__ import annotations
 
 import json
+import math
+import operator
 import os
 import subprocess
 import sys
 import tempfile
 import wave
 
-# From a threshold sweep on a real meeting. 0.6 found 25 speakers in a call
-# with five; 0.9 merged several people into one 11-minute block. 0.75 gave five
-# groups with a believable share of the talking each.
+# sherpa needs a clustering threshold to run, but we throw its groups away and
+# build our own. It stays at the measured value so the segment boundaries this
+# module was validated against do not move.
 THRESHOLD = 0.75
+
+# A span shorter than this gives a vector too noisy to group on. Short spans
+# resemble each other more than they resemble their own speaker, so they form a
+# junk group that swallows everybody's brief replies.
+RELIABLE_SECONDS = 4.0
+
+# Merge two groups while they are at least this alike, and the least a span may
+# score to be given a voice at all. Across three hand-labelled meetings the
+# closest two people scored 0.421 and one person at worst 0.532. See SPEC.md.
+MERGE_SIMILARITY = 0.50
 
 # Below this, pyannote's own segmenter is reporting noise rather than speech.
 MIN_DURATION_ON = 0.5
@@ -113,8 +128,8 @@ def load_samples(audio_path: str):
         return read_wav(wav)
 
 
-def segments_from(samples) -> list[tuple[float, float, int]]:
-    """Raw (start, end, cluster) from the models. Empty when unavailable."""
+def segments_from(samples) -> list[tuple[float, float]]:
+    """Where each stretch of talking starts and stops. Empty when unavailable."""
     paths = model_paths()
     if paths is None:
         return []
@@ -138,7 +153,81 @@ def segments_from(samples) -> list[tuple[float, float, int]]:
 
     result = sherpa_onnx.OfflineSpeakerDiarization(config).process(
         samples).sort_by_start_time()
-    return [(row.start, row.end, row.speaker) for row in result]
+    return [(row.start, row.end) for row in result]
+
+
+def unit(vector: list[float]) -> list[float]:
+    """The vector at length one, so a dot product is a cosine."""
+    length = math.sqrt(sum(value * value for value in vector))
+    return [value / length for value in vector] if length else []
+
+
+def similarity(left: list[float], right: list[float]) -> float:
+    """Cosine of two unit vectors. Zero when either is missing."""
+    return sum(map(operator.mul, left, right)) if left and right else 0.0
+
+
+def centre(units: list[list[float]]) -> list[float]:
+    """The average of several unit vectors, itself at length one."""
+    return unit([sum(values) for values in zip(*units)]) if units else []
+
+
+def cluster(vectors: list[list[float]], seconds: list[float]) -> list[list[int]]:
+    """Group the spans by voice, busiest voice first.
+
+    Only spans over RELIABLE_SECONDS get a say in who exists. Groups merge while
+    their average likeness holds up, and a group that never says much is dropped
+    — it is clustering noise, not a colleague.
+    """
+    members = {index: [index] for index, length in enumerate(seconds)
+               if length >= RELIABLE_SECONDS and vectors[index]}
+    units = {index: unit(vectors[index]) for index in members}
+
+    def key(left, right):
+        return (left, right) if left < right else (right, left)
+
+    order = sorted(members)
+    totals = {key(a, b): similarity(units[a], units[b])
+              for position, a in enumerate(order) for b in order[position + 1:]}
+
+    while len(members) > 1:
+        best, closest = -2.0, None
+        for pair, total in totals.items():
+            left, right = pair
+            average = total / (len(members[left]) * len(members[right]))
+            if average > best:
+                best, closest = average, pair
+        if best < MERGE_SIMILARITY:
+            break
+        left, right = closest
+        for other in members:
+            if other not in closest:
+                totals[key(left, other)] = (totals.pop(key(left, other))
+                                            + totals.pop(key(right, other)))
+        del totals[closest]
+        members[left] += members[right]
+        del members[right]
+
+    talked = lambda group: sum(seconds[index] for index in group)
+    kept = [sorted(group) for group in members.values()
+            if talked(group) >= MIN_SPEAKER_SECONDS]
+    return sorted(kept, key=lambda group: (-talked(group), group[0]))
+
+
+def assign(vectors: list[list[float]], groups: list[list[int]]) -> list[int | None]:
+    """The group each span belongs to, or None when it resembles none of them.
+
+    None is the honest answer for a two-second reply that could be anybody. Its
+    line keeps the plain `Them` label rather than borrowing somebody's name.
+    """
+    centres = [centre([unit(vectors[index]) for index in group]) for group in groups]
+    placed: list[int | None] = []
+    for vector in vectors:
+        scores = [similarity(unit(vector), middle) for middle in centres]
+        best = max(range(len(scores)), key=scores.__getitem__) if scores else None
+        placed.append(best if best is not None
+                      and scores[best] >= MERGE_SIMILARITY else None)
+    return placed
 
 
 def label(segments: list[tuple[float, float, int]]) -> list[dict]:
@@ -208,34 +297,58 @@ def voiceprint_model() -> str | None:
     return path if os.path.exists(path) else None
 
 
+def extractor():
+    """The recognition model, ready to use. None when it was never fetched."""
+    model = voiceprint_model()
+    if model is None:
+        return None
+    try:
+        import sherpa_onnx
+    except ImportError:
+        return None
+    config = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=model)
+    return sherpa_onnx.SpeakerEmbeddingExtractor(config) if config.validate() else None
+
+
+def measure(engine, audio) -> list[float]:
+    """One vector for one piece of audio. Empty when there is too little."""
+    if audio.size == 0:
+        return []
+    stream = engine.create_stream()
+    stream.accept_waveform(sample_rate=SAMPLE_RATE, waveform=audio)
+    stream.input_finished()
+    if not engine.is_ready(stream):
+        return []
+    return [float(value) for value in engine.compute(stream)]
+
+
+def span_vectors(samples, spans: list[tuple[float, float]]) -> list[list[float]]:
+    """One vector per span. Empty when the model was never fetched."""
+    engine = extractor()
+    if engine is None or not spans:
+        return []
+    return [measure(engine, samples[int(start * SAMPLE_RATE):int(end * SAMPLE_RATE)])
+            for start, end in spans]
+
+
 def voiceprints(samples, ranges: dict[str, list[tuple[int, int]]]) -> dict[str, list[float]]:
     """One vector per letter, from that letter's audio. Empty when unavailable."""
-    model = voiceprint_model()
-    if model is None or not ranges:
+    engine = extractor()
+    if engine is None or not ranges:
         return {}
     try:
         import numpy
-        import sherpa_onnx
     except ImportError:
         return {}
-
-    config = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=model)
-    if not config.validate():
-        return {}
-    extractor = sherpa_onnx.SpeakerEmbeddingExtractor(config)
 
     prints: dict[str, list[float]] = {}
     for letter, spans in sorted(ranges.items()):
         pieces = [samples[int(start * SAMPLE_RATE / 1000):int(end * SAMPLE_RATE / 1000)]
                   for start, end in spans]
         audio = numpy.concatenate(pieces) if pieces else numpy.empty(0, dtype="float32")
-        if audio.size == 0:
-            continue
-        stream = extractor.create_stream()
-        stream.accept_waveform(sample_rate=SAMPLE_RATE, waveform=audio)
-        stream.input_finished()
-        if extractor.is_ready(stream):
-            prints[letter] = [float(value) for value in extractor.compute(stream)]
+        vector = measure(engine, audio)
+        if vector:
+            prints[letter] = vector
     return prints
 
 
@@ -249,7 +362,15 @@ def run(recording_dir: str) -> list[dict]:
     if samples is None:
         return []
 
-    labelled = label(segments_from(samples))
+    spans = segments_from(samples)
+    vectors = span_vectors(samples, spans)
+    if not vectors:
+        return []
+
+    groups = cluster(vectors, [end - start for start, end in spans])
+    labelled = label([(start, end, group)
+                      for (start, end), group in zip(spans, assign(vectors, groups))
+                      if group is not None])
     if not labelled:
         return []
 
@@ -258,7 +379,7 @@ def run(recording_dir: str) -> list[dict]:
 
     # Only the voices worth remembering get a print. The letters of the rest
     # still read in the transcript, and `qn play` still plays them.
-    strong = {letter: spans for letter, spans in print_ranges(labelled).items()
+    strong = {letter: ranges for letter, ranges in print_ranges(labelled).items()
               if letter in worth_remembering(labelled)}
     prints = voiceprints(samples, strong)
     if prints:

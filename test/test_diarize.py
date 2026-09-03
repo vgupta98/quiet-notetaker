@@ -372,5 +372,95 @@ class ReadingVoiceprints(unittest.TestCase):
         self.assertEqual(diarize.read_prints(self.dir), {"B": [1.0]})
 
 
+class Vectors(unittest.TestCase):
+    def test_a_unit_vector_has_length_one(self):
+        self.assertAlmostEqual(
+            sum(v * v for v in diarize.unit([3.0, 4.0])), 1.0)
+
+    def test_a_vector_of_zeroes_has_no_direction(self):
+        self.assertEqual(diarize.unit([0.0, 0.0]), [])
+
+    def test_the_same_direction_scores_one(self):
+        self.assertAlmostEqual(
+            diarize.similarity(diarize.unit([2.0, 0.0]), diarize.unit([9.0, 0.0])), 1.0)
+
+    def test_a_right_angle_scores_nothing(self):
+        self.assertAlmostEqual(
+            diarize.similarity(diarize.unit([1.0, 0.0]), diarize.unit([0.0, 1.0])), 0.0)
+
+    def test_a_missing_vector_scores_nothing(self):
+        self.assertEqual(diarize.similarity([], diarize.unit([1.0, 0.0])), 0.0)
+
+    def test_the_centre_sits_between_two_voices(self):
+        middle = diarize.centre([diarize.unit([1.0, 0.0]), diarize.unit([0.0, 1.0])])
+        self.assertAlmostEqual(middle[0], middle[1])
+
+
+# Three directions far enough apart that nothing merges them, plus near-copies.
+EAST, NORTH, UP = [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]
+EAST_ISH, NORTH_ISH = [0.95, 0.05, 0.0], [0.05, 0.95, 0.0]
+
+
+class Clustering(unittest.TestCase):
+    def test_two_voices_stay_two_groups(self):
+        vectors = [EAST, EAST_ISH, NORTH, NORTH_ISH]
+        groups = diarize.cluster(vectors, [15.0, 15.0, 15.0, 15.0])
+        self.assertEqual([sorted(g) for g in groups], [[0, 1], [2, 3]])
+
+    def test_the_busiest_group_comes_first(self):
+        vectors = [NORTH, NORTH_ISH, EAST, EAST_ISH]
+        groups = diarize.cluster(vectors, [11.0, 11.0, 30.0, 30.0])
+        self.assertEqual(sorted(groups[0]), [2, 3])
+
+    def test_a_short_span_never_decides_who_exists(self):
+        # The east pair is long. The north pair is too short to have a say.
+        groups = diarize.cluster([EAST, EAST_ISH, NORTH, NORTH_ISH],
+                                 [15.0, 15.0, 3.9, 3.9])
+        self.assertEqual([sorted(g) for g in groups], [[0, 1]])
+
+    def test_a_span_of_exactly_the_floor_still_counts(self):
+        # Five spans of exactly 4s reach the 20s a group needs to survive.
+        vectors = [EAST, EAST_ISH] * 2 + [EAST]
+        groups = diarize.cluster(vectors, [diarize.RELIABLE_SECONDS] * 5)
+        self.assertEqual([sorted(g) for g in groups], [[0, 1, 2, 3, 4]])
+
+    def test_a_quiet_group_is_dropped(self):
+        # Both pairs are reliable spans, but the north pair barely talks.
+        groups = diarize.cluster([EAST, EAST_ISH, NORTH, NORTH_ISH],
+                                 [15.0, 15.0, 5.0, 5.0])
+        self.assertEqual([sorted(g) for g in groups], [[0, 1]])
+
+    def test_a_span_with_no_vector_is_ignored(self):
+        groups = diarize.cluster([EAST, EAST_ISH, []], [15.0, 15.0, 60.0])
+        self.assertEqual([sorted(g) for g in groups], [[0, 1]])
+
+    def test_nothing_reliable_means_no_groups(self):
+        self.assertEqual(diarize.cluster([EAST, NORTH], [1.0, 1.0]), [])
+
+
+class Assigning(unittest.TestCase):
+    def setUp(self):
+        self.vectors = [EAST, EAST_ISH, NORTH, NORTH_ISH]
+        self.groups = diarize.cluster(self.vectors, [15.0, 15.0, 15.0, 15.0])
+
+    def test_a_span_joins_the_voice_it_resembles(self):
+        self.assertEqual(diarize.assign(self.vectors, self.groups), [0, 0, 1, 1])
+
+    def test_a_short_span_is_placed_too(self):
+        # This is the point of the step: scraps get a seat, just never a vote.
+        vectors = self.vectors + [[0.9, 0.1, 0.0]]
+        self.assertEqual(diarize.assign(vectors, self.groups)[-1], 0)
+
+    def test_a_span_that_resembles_nobody_is_left_alone(self):
+        # A third direction, at a right angle to both voices in the room.
+        self.assertIsNone(diarize.assign(self.vectors + [UP], self.groups)[-1])
+
+    def test_a_span_with_no_vector_is_left_alone(self):
+        self.assertIsNone(diarize.assign(self.vectors + [[]], self.groups)[-1])
+
+    def test_no_groups_means_nobody_is_placed(self):
+        self.assertEqual(diarize.assign(self.vectors, []), [None] * 4)
+
+
 if __name__ == "__main__":
     unittest.main()

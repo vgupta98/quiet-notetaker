@@ -218,10 +218,15 @@ diarize = yes
 The transcript gains `Them A:`, `Them B:` labels, and Claude uses them
 alongside the roster to work out who said what.
 
-**These letters are a hint, not an identity.** Measured on a real 26-minute
-standup, the clustering put a question and its answer in the same group — two
-people, one letter. `prompt.md` tells Claude to believe the words over the
-letter when they disagree, so a bad group can be overruled.
+**These letters are a hint, not an identity.** `prompt.md` tells Claude to
+believe the words over the letter when they disagree, so a bad group can be
+overruled.
+
+A voice needs to talk for four seconds before it helps decide who is in the
+room. Below that, one person's "yeah, sounds good" resembles everybody else's,
+and letting those decide produced a junk letter that held four different people.
+Short replies still get a letter afterwards — but only if they clearly resemble
+someone. A reply that could be anybody stays plain `Them`.
 
 Grouping on its own never produces a name. The only way a letter becomes a
 person is a name **you** gave it, here or in an earlier meeting.
@@ -294,10 +299,9 @@ Each confirmation adds one sample. A person's stored voice is the average of
 theirs. Two or three samples is where it becomes reliable. After about ten it
 stops improving. The model itself never changes — only the roster does.
 
-**Name every voice the list offers.** The grouping often splits one person
-across several letters. Naming each one gives that person another sample, which
-helps. Naming A also re-checks B and C, so they usually leave the list on their
-own.
+**Name every voice the list offers.** Naming a voice gives that person another
+sample, which helps. Naming A also re-checks B and C, so they usually leave the
+list on their own.
 
 **The list never offers a voice worth under a minute.** A short sample makes
 recognition worse, not better. Measured: a 26-second sample of a colleague,
@@ -312,12 +316,12 @@ the transcript is named, the roster is unchanged
 
 The transcript still gets the name. Only the roster stays out of it.
 
-Recognition uses a **second model**, separate from the one that does the
-grouping. They are different jobs. Measured on nine real meetings, the grouping
-model scored two different colleagues *more* alike than it scored one colleague
-recorded on two different days — it would have put the wrong name on the wrong
-action item. Six models were compared; the numbers are in the `MATCH_THRESHOLD`
-comment in `lib/voices.py`, and `qn voices --sweep` reproduces them on your own
+One model does both the grouping and the recognition. An earlier version used a
+second model for the grouping, and it was wrong often enough to be useless: on
+three meetings labelled by ear it scored two different colleagues about as alike
+as one colleague against himself. Swapping it took the grouping from 60–86%
+correct to 100% on two meetings the settings had never seen. The numbers are in
+`SPEC.md`, and `qn voices --sweep` reproduces the recognition side on your own
 recordings.
 
 A voice you would rather not keep:
