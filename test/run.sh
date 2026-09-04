@@ -820,10 +820,15 @@ fi
 # It runs the ordinary doctor checks too, so one command answers everything.
 assert_contains "$mic_out" "notes:" "doctor --mic still reports the setup"
 
-# "qn doctor sync" is a meeting, not a broken flag.
+# "doctor sync" is a fine meeting title once you ask for a recording by name.
 capture 20 "$TMPROOT/mic-title.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
-  QN_DRY_RUN=1 /bin/bash "$QN" doctor sync
+  QN_DRY_RUN=1 /bin/bash "$QN" record doctor sync
 assert_contains "$(cat "$TMPROOT/mic-title.out")" "id=" "a meeting called 'doctor sync' still records"
+
+# A near miss of a subcommand must never be mistaken for a recording.
+capture 20 "$TMPROOT/typo.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+  QN_DRY_RUN=1 /bin/bash "$QN" doctorr 2>&1 || true
+assert_contains "$(cat "$TMPROOT/typo.out")" "unknown command" "a mistyped subcommand is refused"
 
 # A bad duration must fail here, naming the variable.
 capture 20 "$TMPROOT/mic-bad.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \

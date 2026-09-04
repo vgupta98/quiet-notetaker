@@ -20,7 +20,7 @@ on your PATH, and runs `qn doctor`. Then `qn` works from any folder:
 
 ```sh
 cd ~/anywhere
-qn team sync
+qn record team sync
 ```
 
 The link points back at this checkout, so `git pull` upgrades you. `make
@@ -33,10 +33,10 @@ first use.
 ## Use
 
 ```sh
-./qn sdk sync                        # record, Ctrl-C to stop
-./qn --with "Priya, Arjun" sync      # name who is there
-./qn --local 1:1 with manager        # transcribe, but never send to Claude
-./qn watch                           # record detected meetings by itself
+./qn record sdk sync                    # record, Ctrl-C to stop
+./qn --with "Priya, Arjun" record sync  # name who is there
+./qn --local record 1:1 with manager    # transcribe, never send to Claude
+./qn watch                              # record detected meetings by itself
 ```
 
 `watch` starts recording the moment a call begins, then asks how to handle it.

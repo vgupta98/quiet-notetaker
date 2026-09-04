@@ -104,7 +104,7 @@ Minutes may exceed 59 (`[104:12]`). Speaker is exactly `Me` or `Them`.
 ## CLI surface
 
 ```
-qn [--with "A, B"] [--local] [title...]   record until Ctrl-C, then process
+qn record [title...]            record until Ctrl-C, then process
 qn redo <id|dir>                rebuild notes from an existing recording
 qn --notes-only redo <id>       rebuild the notes, reusing the transcript
 qn play <id> [MM:SS]            play the audio from a timestamp

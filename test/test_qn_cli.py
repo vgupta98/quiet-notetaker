@@ -108,7 +108,8 @@ class ConsentFailsClosed(unittest.TestCase):
 
 
 class Dispatch(unittest.TestCase):
-    """A meeting whose name starts with a subcommand must still record."""
+    """Recording is the one thing that takes the microphone, so it is asked for
+    by name. Anything else is a mistake, and a mistake must not record."""
 
     def test_a_title_beginning_with_a_verb_records(self):
         for title in (
@@ -118,12 +119,31 @@ class Dispatch(unittest.TestCase):
             ["doctor", "sync"],
             ["pending", "items", "review"],
         ):
-            done = run_qn(*title)
+            done = run_qn("record", *title)
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIn("id=", done.stdout, f"{title} did not record")
 
     def test_a_bare_verb_still_runs_the_subcommand(self):
         done = run_qn("doctor")
+        self.assertNotIn("id=", done.stdout)
+
+    def test_a_mistyped_command_does_not_record(self):
+        done = run_qn("voces")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("unknown command", done.stderr)
+        self.assertNotIn("id=", done.stdout)
+
+    def test_a_subcommand_with_a_bad_flag_does_not_record(self):
+        # `voices` matches the verb but not the flag, so it used to fall
+        # through to recording a meeting called "voices --bogus".
+        done = run_qn("voices", "--bogus")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertNotIn("id=", done.stdout)
+
+    def test_no_arguments_lists_the_commands(self):
+        done = run_qn()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("qn record", done.stdout)
         self.assertNotIn("id=", done.stdout)
 
     def test_redo_without_an_argument_explains_itself(self):
@@ -147,14 +167,14 @@ class Dispatch(unittest.TestCase):
     def test_notes_only_cannot_record_a_new_meeting(self):
         # There is nothing to reuse, and finding out after the meeting would
         # cost the user the recording.
-        done = run_qn("--notes-only", "some meeting")
+        done = run_qn("--notes-only", "record", "some meeting")
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("--notes-only", done.stderr)
         self.assertNotIn("id=", done.stdout)
 
     def test_a_dry_run_creates_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            run_qn("some meeting", notes=tmp)
+            run_qn("record", "some meeting", notes=tmp)
             self.assertEqual(os.listdir(tmp), [])
 
 
@@ -260,9 +280,9 @@ class VoiceRosterDispatch(unittest.TestCase):
         self.assertIn("no voice on file", done.stdout + done.stderr)
 
     def test_a_meeting_titled_voices_review_still_records(self):
-        # The dispatch matches on the argument count, so more words mean a
-        # meeting. QN_DRY_RUN stops it before any audio device is opened.
-        done = run_qn("voices", "review", notes=self.notes)
+        # `voices` as a title is fine once you ask for a recording by name.
+        # QN_DRY_RUN stops it before any audio device is opened.
+        done = run_qn("record", "voices", "review", notes=self.notes)
         self.assertIn("id=", done.stdout)
 
 
@@ -277,9 +297,12 @@ class PlayDispatch(unittest.TestCase):
         # It got as far as looking for the recording, so it took the letter.
         self.assertIn("no-such-meeting", done.stdout + done.stderr)
 
-    def test_a_word_is_still_a_meeting_title(self):
+    def test_a_word_is_not_a_voice_letter(self):
+        # "session" is not one letter, so this is a malformed play rather than
+        # a voice. It must say so, not start recording something.
         done = run_qn("play", "testing", "session", notes=self.notes)
-        self.assertIn("id=", done.stdout)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertNotIn("id=", done.stdout)
 
     def test_a_timestamp_still_plays_the_meeting(self):
         done = run_qn("play", "no-such-meeting", "01:37", notes=self.notes)

@@ -2,23 +2,26 @@
 # Record a meeting, transcribe it, and write the notes. Everything stays on
 # this Mac unless you choose to send a transcript to Claude.
 #
-#   qn [--with "A, B"] [--local] [title...]   record until Ctrl-C, then process
-#   qn watch                                  record detected meetings by itself
-#   qn redo <id>                              rebuild notes from a recording
-#   qn --notes-only redo <id>                 rebuild notes, reuse the words
-#   qn approve <id>                           send a held meeting to Claude
-#   qn pending                                list meetings awaiting approval
-#   qn play <id> [MM:SS]                      hear what was actually said
-#   qn play <id> <letter>                     hear one voice, before you name it
-#   qn index                                  rebuild the search index
-#   qn vocab                                  show the words it has learned
-#   qn people                                 show who you meet, and add notes
-#   qn confirm <id> <letter> <name>           say who a voice really was
-#   qn voices [--sweep]                       show the voices it can recognise
-#   qn forget <name>                          stop recognising that voice
-#   qn prune [--older-than 30d]               delete old audio, keep the notes
-#   qn doctor                                 check the setup
-#   qn doctor --mic                           record a few seconds and listen
+#   qn record [title...]              record until Ctrl-C, then process
+#   qn watch                          record detected meetings by itself
+#   qn redo <id>                      rebuild notes from a recording
+#   qn --notes-only redo <id>         rebuild notes, reuse the words
+#   qn approve <id>                   send a held meeting to Claude
+#   qn pending                        list meetings awaiting approval
+#   qn play <id> [MM:SS]              hear what was actually said
+#   qn play <id> <letter>             hear one voice, before you name it
+#   qn index                          rebuild the search index
+#   qn vocab                          show the words it has learned
+#   qn people                         show who you meet, and add notes
+#   qn confirm <id> <letter> <name>   say who a voice really was
+#   qn voices [--sweep]               show the voices it can recognise
+#   qn forget <name>                  stop recognising that voice
+#   qn prune [--older-than 30d]       delete old audio, keep the notes
+#   qn doctor                         check the setup
+#   qn doctor --mic                   record a few seconds and listen
+#
+#   Flags come before the command: --with "A, B" says who is there,
+#   --local keeps the meeting off Claude.
 set -euo pipefail
 
 # `qn` is meant to be symlinked onto your PATH, so it has to find the repo it
@@ -125,6 +128,9 @@ esac
 script_fingerprint() { stat -f '%m %z' "$SELF" 2>/dev/null || printf 'unknown'; }
 
 die()  { printf 'qn: %s\n' "$1" >&2; exit 1; }
+# The header comment is the only list of commands. Printing it means there is
+# never a second copy to fall out of step.
+usage() { sed -n 's/^#\(   qn .*\)$/\1/p' "$SELF"; }
 step() { printf '\033[2m  %s\033[0m\n' "$1" >&2; }
 warn() { printf '\033[33m  %s\033[0m\n' "$1" >&2; }
 loud() { printf '\n  \033[1m%s\033[0m\n' "$1" >&2; }
@@ -1264,9 +1270,7 @@ case "${1:-}:$#" in
   approve:2)        cmd_approve "$2"; exit $? ;;
   play:2)           cmd_play "$2" "00:00"; exit $? ;;
   play:3)
-    # Only a real timestamp or a single voice letter makes this the play
-    # command. "qn play testing session" is a meeting, not a request to replay
-    # one, and "session" is not one character.
+    # A timestamp replays the meeting, a single letter replays one voice.
     case "$3" in
       [0-9]*:[0-9][0-9]) cmd_play "$2" "$3"; exit $? ;;
       [A-Za-z])          cmd_play_voice "$2" "$3"; exit $? ;;
@@ -1275,10 +1279,16 @@ case "${1:-}:$#" in
   redo:1)           die "usage: qn redo <id>" ;;
   approve:1)        die "usage: qn approve <id>" ;;
   play:1)           die "usage: qn play <id> [MM:SS]" ;;
+  record:*)
+    shift
+    need whisper-cli "brew install whisper-cpp"
+    need claude "install the Claude CLI"
+    [ -f "$MODEL" ] || die "the speech model is missing — run: make models"
+    cmd_record "$attendees" "$sharing" "${*:-meeting}"
+    exit $? ;;
+  :0)               usage; exit 0 ;;
 esac
 
-# Anything that was not a subcommand is a meeting title.
-need whisper-cli "brew install whisper-cpp"
-need claude "install the Claude CLI"
-[ -f "$MODEL" ] || die "the speech model is missing — run: make models"
-cmd_record "$attendees" "$sharing" "${*:-meeting}"
+# Reaching here means nothing matched. Recording is the one thing that grabs
+# the microphone, so a typo must never be mistaken for it.
+die "unknown command: $* — run 'qn' to see what it can do"
