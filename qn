@@ -228,17 +228,22 @@ Do not record — delete the audio" ¬
 end run
 OSA
 )"
+    # Anything that is not a clear yes or a clear no is held on this Mac.
+    local decision=local
     case "$answer" in
-      *"Full notes"*)    printf 'full\n'  > "$work/consent" ;;
-      *"Local only"*)    printf 'local\n' > "$work/consent" ;;
-      *"Do not record"*) printf 'none\n'  > "$work/consent" ;;
-      *)                 printf 'local\n' > "$work/consent" ;;
+      *"Full notes"*)    decision=full ;;
+      *"Do not record"*) decision=none ;;
     esac
+    printf '%s\n' "$decision" > "$work/consent"
     # Written last, and only once an answer is in the file. `consent` itself
     # is pre-seeded before recording starts, so it cannot say whether anyone
     # has answered — only this can.
     : > "$work/consent.answered"
-  ) >/dev/null 2>&1 &
+    if [ "$decision" = none ]; then
+      discard_recording "$work"
+      warn "not recording — the audio is gone"
+    fi
+  ) &
 }
 
 # Give a still-open dialog a moment to be answered. Silence means "hold it".
@@ -258,6 +263,22 @@ wait_for_consent() {
   # Belt and braces: the pre-seed already holds `local`, and read_consent
   # reads an empty file as `local` too. Neither is a reason to leave a gap.
   if [ ! -s "$work/consent" ]; then printf 'local\n' > "$work/consent"; fi
+}
+
+# "Do not record" has to mean it. The recorder holds the microphone until it is
+# stopped, so a refusal that only deleted the audio at the end recorded the
+# whole meeting first, and a crash in between kept what it had.
+#
+# The lock is touched only while it still names this meeting. An answer can
+# arrive after the meeting ended, by which time the next one is already
+# recording, and that one must not be stopped.
+discard_recording() {
+  local work="$1" lock="$REC_DIR/.recording"
+  if [ "$(cat "$lock" 2>/dev/null)" = "$work" ]; then
+    if [ -s "$lock.pid" ]; then kill -TERM "$(cat "$lock.pid")" 2>/dev/null || true; fi
+    rm -f "$lock" "$lock.pid"
+  fi
+  rm -rf "$work"
 }
 
 # Anything we cannot positively read as a decision is held. A crash, a reboot,
@@ -456,7 +477,7 @@ process_recording() {
   local sharing
   sharing="$(read_consent "$work")"
   if [ "$sharing" = "none" ]; then
-    rm -rf "$work"
+    discard_recording "$work"
     rm -f "$note"
     warn "discarded at your request — the audio is gone"
     return 0
@@ -655,7 +676,7 @@ finish_recording() {
   local work="$1" started_as="$2" people=""
   wait_for_consent "$work"
   if [ "$(read_consent "$work")" = "none" ]; then
-    rm -rf "$work"
+    discard_recording "$work"
     warn "discarded at your request"
     return 0
   fi
@@ -723,9 +744,11 @@ cmd_watch() {
         printf '%s' "$work" > "$lock"
 
         loud "$title"
-        ask_consent "$work" "$title"
+        # The recorder starts before the dialog opens: "Do not record" stops it,
+        # and it can only stop a pid that has been written down.
         "$RECORDER" "$work" &
         printf '%s' "$!" > "$lock.pid"
+        ask_consent "$work" "$title"
         ;;
       STOP)
         # SIGTERM, not SIGINT: a background job in a non-interactive shell

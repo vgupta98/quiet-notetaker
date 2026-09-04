@@ -76,6 +76,10 @@ says, and skips the recording in progress. Asking the consent instead hid a
 meeting completely: a `full` answer that arrives after the watch stopped
 waiting leaves no notes and a consent that reads `full`.
 
+"Do not record" stops the recorder as it is clicked and deletes the folder.
+Acting on it only at the end of the meeting recorded the whole meeting first,
+and a crash in between kept what it had.
+
 `consent` is written with `local` before the recorder captures a sample, so a
 crash cannot leave a shareable meeting. That means its presence says nothing
 about whether anyone has answered, and `consent.answered` is what says so. A

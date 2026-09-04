@@ -48,7 +48,7 @@ while the next is already recording.
 |---|---|
 | **Full notes** | Transcript goes to Claude, notes are written |
 | **Local only** | Transcript stays on this Mac. No AI notes |
-| **Do not record** | Audio is deleted |
+| **Do not record** | Recording stops at once, audio is deleted |
 | *no answer* | Held locally — nothing is sent |
 
 Held meetings wait for you:

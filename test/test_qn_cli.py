@@ -37,12 +37,20 @@ def call_helper(name: str, *args: str, env: dict | None = None) -> str:
     return done.stdout
 
 
-def finish_recording_script(rec_dir, consent, fingerprint, dies):
-    """finish_recording() out of `qn`, with its collaborators stubbed out."""
-    source = QN.read_text()
-    match = re.search(r"^finish_recording\(\) \{.*?^\}", source, re.S | re.M)
+def bash_function(name: str) -> str:
+    """One bash function lifted out of `qn`, so a rename breaks the test."""
+    match = re.search(rf"^{re.escape(name)}\(\) \{{.*?^\}}", QN.read_text(), re.S | re.M)
     if match is None:
-        raise AssertionError("finish_recording() no longer exists in qn — update this test")
+        raise AssertionError(f"{name}() no longer exists in qn — update this test")
+    return match.group(0)
+
+
+def finish_recording_script(rec_dir, consent, fingerprint, dies):
+    """finish_recording() out of `qn`, with its collaborators stubbed out.
+
+    discard_recording is the real one: deleting a refused meeting is the
+    behaviour under test, not a collaborator.
+    """
     ending = "exit 1" if dies else ":"
     return f"""
 REC_DIR={rec_dir}
@@ -53,7 +61,8 @@ title_from_id() {{ printf '%s' "$1"; }}
 warn() {{ :; }}
 loud() {{ :; }}
 process_recording() {{ touch "$REC_DIR/processed"; {ending}; }}
-{match.group(0)}
+{bash_function("discard_recording")}
+{bash_function("finish_recording")}
 finish_recording "$@"
 """
 
@@ -437,6 +446,58 @@ class ProcessingRunsBehindTheWatcher(unittest.TestCase):
                 break
             time.sleep(0.1)
         self.assertTrue(self.processed(), "the queue never let the second one through")
+
+
+class RefusingStopsTheRecordingNow(unittest.TestCase):
+    """"Do not record" has to mean it.
+
+    The refusal used to be acted on only when the meeting ended, so qn recorded
+    the whole meeting first and a crash in between kept what it had. Measured:
+    a refused call held the microphone for two minutes and left 1.2 MB on disk.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.rec = pathlib.Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.work = self.rec / "2026-09-04-1715-zoom-meeting"
+        self.work.mkdir()
+        (self.work / "me.m4a").write_bytes(b"audio")
+        self.recorder = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(self.recorder.wait)
+        self.addCleanup(self.recorder.terminate)
+
+    def hold(self, named):
+        (self.rec / ".recording").write_text(str(named))
+        (self.rec / ".recording.pid").write_text(str(self.recorder.pid))
+
+    def discard(self):
+        call_helper("discard_recording", str(self.work), env={"REC_DIR": str(self.rec)})
+
+    def recorder_stopped(self):
+        for _ in range(50):
+            if self.recorder.poll() is not None:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def test_the_recorder_is_stopped_and_the_audio_goes(self):
+        self.hold(self.work)
+        self.discard()
+        self.assertTrue(self.recorder_stopped(), "it kept recording after the refusal")
+        self.assertFalse(self.work.exists())
+        self.assertFalse((self.rec / ".recording").exists(), "the lock outlived the recording")
+
+    def test_a_late_refusal_leaves_the_meeting_now_recording_alone(self):
+        # The dialog waits longer than the meeting can last. An answer that
+        # lands afterwards must not stop whatever is recording by then.
+        later = self.rec / "2026-09-04-1800-sdk-sync"
+        later.mkdir()
+        self.hold(later)
+        self.discard()
+        self.assertIsNone(self.recorder.poll(), "it stopped the next meeting's recorder")
+        self.assertTrue((self.rec / ".recording").exists(), "it took the next meeting's lock")
+        self.assertFalse(self.work.exists(), "the refused audio survived")
 
 
 if __name__ == "__main__":
