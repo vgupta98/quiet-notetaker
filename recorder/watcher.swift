@@ -65,9 +65,12 @@ func classifyWindow(owner: String, name: String) -> Bool {
 /// `ignoreActive` is our own recorder holding the microphone. It blocks a
 /// start but never a stop, otherwise we would record ourselves recording.
 struct MeetingStateMachine {
-    /// Zoom drops and reopens the microphone when it switches audio device.
-    /// Waiting this long before a STOP turns that gap into a non-event.
-    static let stopDebounce: TimeInterval = 20
+    /// A meeting app drops the microphone for a moment when the audio device
+    /// changes: 0.21s at worst over nine measured switches. Leaving one call
+    /// and joining the next took 8.44s at its fastest over five. This sits
+    /// between them. At 20s it swallowed every handover, so back-to-back
+    /// meetings became one recording.
+    static let stopDebounce: TimeInterval = 5
 
     private(set) var inMeeting = false
     private var quietSince: Date?
@@ -338,24 +341,24 @@ func runSelfTest() -> Int32 {
     machine = MeetingStateMachine()
     _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0)
     _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: t0)
-    check("ten quiet seconds do not stop the meeting",
-          machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(10)) == nil)
-    check("twenty-five quiet seconds stop the meeting",
-          machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(25)) == .stop)
+    check("two quiet seconds do not stop the meeting",
+          machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(2)) == nil)
+    check("six quiet seconds stop the meeting",
+          machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(6)) == .stop)
     check("the meeting is over after the stop", machine.inMeeting == false)
 
     machine = MeetingStateMachine()
     _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0)
     _ = machine.update(micActive: false, meetingWindow: zoom, ignoreActive: false, now: t0)
-    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: at(10))
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: at(3))
     check("the microphone coming back cancels the stop",
-          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: at(25)) == nil)
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: at(20)) == nil)
     check("the meeting survives the audio device switch", machine.inMeeting == true)
 
     machine = MeetingStateMachine()
     _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0)
     _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: t0)
-    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(25))
+    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(6))
     check("a stop is emitted once",
           machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(60)) == nil)
 

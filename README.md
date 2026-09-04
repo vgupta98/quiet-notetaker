@@ -41,6 +41,8 @@ first use.
 
 `watch` starts recording the moment a call begins, then asks how to handle it.
 The recording never waits for your answer, so you never lose the first minute.
+Back-to-back calls become separate meetings, and the notes for one are written
+while the next is already recording.
 
 | Answer | What happens |
 |---|---|

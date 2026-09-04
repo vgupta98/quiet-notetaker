@@ -423,6 +423,11 @@ STOP
 `title` and `attendees` are present only when a calendar event overlaps now.
 Values never contain tabs or newlines. Unknown fields are ignored by readers.
 
+STOP is sent when the microphone has been free for 5 seconds. Measured here:
+nine audio device switches released it for 0.21s at worst, and five hurried
+leave-and-rejoins between calls for 8.44s at least. The earlier 20s was longer
+than every handover, so back-to-back meetings became one recording.
+
 `qn watch` writes up a finished meeting behind itself, one at a time. Doing it
 inline left the loop unable to read its own event pipe: the next meeting was
 stamped with the clock time the loop reached it, was asked for consent after
