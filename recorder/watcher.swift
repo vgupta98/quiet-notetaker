@@ -72,8 +72,20 @@ struct MeetingStateMachine {
     /// meetings became one recording.
     static let stopDebounce: TimeInterval = 5
 
+    /// A meeting still running after this long is a recorder nobody stopped.
+    /// Ending it writes up what there is and frees the next one to start.
+    static let maxMeeting: TimeInterval = 4 * 60 * 60
+
     private(set) var inMeeting = false
     private var quietSince: Date?
+    private var startedAt: Date?
+
+    private mutating func finish() -> MeetingEvent {
+        inMeeting = false
+        quietSince = nil
+        startedAt = nil
+        return .stop
+    }
 
     mutating func update(
         micActive: Bool,
@@ -85,8 +97,11 @@ struct MeetingStateMachine {
             guard micActive, !ignoreActive, let window = meetingWindow else { return nil }
             inMeeting = true
             quietSince = nil
+            startedAt = now
             return .start(window)
         }
+
+        if let startedAt, now.timeIntervalSince(startedAt) >= Self.maxMeeting { return finish() }
 
         // Inside a meeting the window may be minimised or renamed, so only the
         // microphone decides the end.
@@ -101,9 +116,7 @@ struct MeetingStateMachine {
         }
         guard now.timeIntervalSince(since) >= Self.stopDebounce else { return nil }
 
-        inMeeting = false
-        quietSince = nil
-        return .stop
+        return finish()
     }
 }
 
@@ -361,6 +374,29 @@ func runSelfTest() -> Int32 {
     _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(6))
     check("a stop is emitted once",
           machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(60)) == nil)
+
+    // The cap, which is the only stop a live microphone cannot postpone.
+    machine = MeetingStateMachine()
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0)
+    check("a live microphone does not keep a meeting past four hours",
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+                         now: at(4 * 60 * 60)) == .stop)
+    check("the meeting is over after the cap", machine.inMeeting == false)
+
+    machine = MeetingStateMachine()
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0)
+    check("a meeting one second under the cap is left alone",
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+                         now: at(4 * 60 * 60 - 1)) == nil)
+
+    machine = MeetingStateMachine()
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0)
+    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(6))
+    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(12))
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: at(13))
+    check("the cap is measured from this meeting, not the one before it",
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+                         now: at(4 * 60 * 60)) == nil)
 
     // Window classification.
     let positives: [(String, String)] = [

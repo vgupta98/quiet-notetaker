@@ -423,6 +423,9 @@ STOP
 `title` and `attendees` are present only when a calendar event overlaps now.
 Values never contain tabs or newlines. Unknown fields are ignored by readers.
 
+STOP is also sent once a meeting has run for four hours, whatever the
+microphone says. That is a recorder nobody stopped, and the cap bounds it.
+
 STOP is sent when the microphone has been free for 5 seconds. Measured here:
 nine audio device switches released it for 0.21s at worst, and five hurried
 leave-and-rejoins between calls for 8.44s at least. The earlier 20s was longer
