@@ -383,7 +383,7 @@ class Aliases(unittest.TestCase):
         block = people.context(self.tmp, "mciccone@example.com")
         self.assertIn("Marco", block)
         self.assertIn("mobile SDKs", block)
-        self.assertNotIn("Dciccale", block)
+        self.assertNotIn("Mciccone", block)
 
     def test_counting_folds_the_address_into_the_person(self):
         roster = people.parse_roster("- **Marco** <mciccone@example.com>")

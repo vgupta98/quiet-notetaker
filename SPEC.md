@@ -151,7 +151,7 @@ An address in angle brackets claims that address for that person:
 ```
 
 A calendar usually gives an address, and no rule turns `mciccone@` into
-"Marco". Without the claim the attendee reads as "Dciccale", which matches no
+"Marco". Without the claim the attendee reads as "Mciccone", which matches no
 roster entry, so what the user wrote never reaches Claude and every line stays
 "Them". The claim is used in three places: the context block, the `attendees:`
 in the note, and therefore the attendee filter in search. Angle brackets are

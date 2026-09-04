@@ -197,7 +197,7 @@ def harvest(notes: list[dict], roster: list[Person] | None = None) -> list[Perso
 
     Private meetings are already absent, because parse_note refuses them.
     `roster` supplies the aliases, so `mciccone@` counts towards Marco rather
-    than inventing a second person called Dciccale.
+    than inventing a second person called Mciccone.
     """
     known = roster or []
     found: dict[str, Person] = {}
@@ -350,7 +350,7 @@ def context(directory: str, attendees: str) -> str:
     prompt.md forbids Claude from using a name that is not on this list.
     """
     # The roster is read first, so an address is resolved to its person before
-    # anything is looked up. Cleaning it first gave "Dciccale", which matches
+    # anything is looked up. Cleaning it first gave "Mciccone", which matches
     # no entry, and Claude was handed a name nobody says out loud.
     roster = read_roster(directory)
     names = split_attendees(attendees, roster)
