@@ -427,6 +427,15 @@ STOP
 `title` and `attendees` are present only when a calendar event overlaps now.
 Values never contain tabs or newlines. Unknown fields are ignored by readers.
 
+The microphone is asked about per process, not per device:
+`kAudioHardwarePropertyProcessObjectList` filtered by
+`kAudioProcessPropertyIsRunningInput`, with `com.apple.replayd` excluded.
+Measured here: Zoom is `us.zoom.xos`, a Meet call in Brave is
+`com.brave.Browser.helper`, and our own recorder is `com.apple.replayd`,
+because ScreenCaptureKit captures through that daemon. Asking the device
+instead counted our own recorder, so the quiet a stop waits for never came,
+and on the built-in microphone a call never ended.
+
 STOP is also sent once a meeting has run for four hours, whatever the
 microphone says. That is a recorder nobody stopped, and the cap bounds it.
 

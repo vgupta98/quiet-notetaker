@@ -155,11 +155,16 @@ func note(_ message: String) {
 
 // MARK: - Microphone
 
-/// Reports whether any process holds the default input device.
+/// Reports whether anything except our own recorder is on the microphone.
 ///
-/// Core Audio raises `kAudioDevicePropertyDeviceIsRunningSomewhere` for that.
-/// A listener block gives an immediate answer, and a poll covers the case
-/// where the user switches input device and the old listener goes silent.
+/// Asking the device instead — `kAudioDevicePropertyDeviceIsRunningSomewhere`
+/// — cannot answer that, because our recorder is on the microphone too. The
+/// flag stayed true for the whole meeting, the quiet the stop waits for never
+/// came, and on the built-in microphone a call never ended at all. Bluetooth
+/// earbuds hid it: they drop their link when the meeting app lets go.
+///
+/// So the question is per process. A device listener still wakes the poll
+/// early, and re-attaches when macOS moves to another input device.
 final class MicMonitor {
     private let lock = NSLock()
     private var device = AudioObjectID(kAudioObjectUnknown)
@@ -171,28 +176,76 @@ final class MicMonitor {
         mScope: kAudioObjectPropertyScopeGlobal,
         mElement: kAudioObjectPropertyElementMain)
 
+    /// ScreenCaptureKit takes the microphone through this daemon, so our own
+    /// recorder appears under Apple's name here and not ours. Measured with the
+    /// recorder running and no meeting app open: the only process on the input
+    /// was com.apple.replayd. Any other ScreenCaptureKit capture is hidden with
+    /// it, which is right: a screen recording is not a meeting.
+    private static let ourCapture = "com.apple.replayd"
+
     init(onChange: @escaping () -> Void) {
         self.onChange = onChange
     }
 
-    /// Reads the microphone state and re-attaches the listener if macOS moved
-    /// to another default input device.
+    /// True while some process other than our own capture holds the microphone.
     func isActive() -> Bool {
+        followDefaultDevice()
+        return Self.audioProcesses().contains { process in
+            Self.isOnInput(process) && Self.bundleID(process) != Self.ourCapture
+        }
+    }
+
+    /// Keeps the wake-up listener on whichever device macOS now calls default.
+    private func followDefaultDevice() {
         let current = Self.defaultInputDevice()
         lock.lock()
-        if current != device {
-            removeListener()
-            device = current
-            addListener()
-        }
-        let target = device
-        lock.unlock()
+        defer { lock.unlock() }
+        guard current != device else { return }
+        removeListener()
+        device = current
+        addListener()
+    }
 
-        guard target != AudioObjectID(kAudioObjectUnknown) else { return false }
+    /// Every process Core Audio knows about. Empty when it will not say.
+    private static func audioProcesses() -> [AudioObjectID] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var size = UInt32(0)
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else {
+            return []
+        }
+        var found = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &found) == noErr else {
+            return []
+        }
+        return found
+    }
+
+    private static func isOnInput(_ process: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyIsRunningInput,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
         var running = UInt32(0)
         var size = UInt32(MemoryLayout<UInt32>.size)
-        let status = AudioObjectGetPropertyData(target, &Self.runningAddress, 0, nil, &size, &running)
+        let status = AudioObjectGetPropertyData(process, &address, 0, nil, &size, &running)
         return status == noErr && running != 0
+    }
+
+    private static func bundleID(_ process: AudioObjectID) -> String {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyBundleID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var name: CFString = "" as CFString
+        var size = UInt32(MemoryLayout<CFString>.size)
+        let status = withUnsafeMutablePointer(to: &name) {
+            AudioObjectGetPropertyData(process, &address, 0, nil, &size, $0)
+        }
+        return status == noErr ? (name as String) : ""
     }
 
     private func addListener() {
