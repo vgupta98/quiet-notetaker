@@ -647,6 +647,38 @@ watch_cleanup() {
   rm -f "$lock" "$lock.pid"
 }
 
+# What a finished meeting still needs. The watch loop runs this in the
+# background: it takes minutes, and the watcher keeps sending events the whole
+# time. Reading them that late stamped the next meeting with the wrong clock
+# time, asked for its consent after it had ended, and captured none of it.
+finish_recording() {
+  local work="$1" started_as="$2" people=""
+  wait_for_consent "$work"
+  if [ "$(read_consent "$work")" = "none" ]; then
+    rm -rf "$work"
+    warn "discarded at your request"
+    return 0
+  fi
+  if [ "$(script_fingerprint)" != "$started_as" ]; then
+    # The audio is already on disk and finalised. Only the processing would
+    # run half-old code, so stop short of it and say so.
+    loud "qn changed on disk while this watch was running"
+    warn "your recording is safe, but this watch is running the old version"
+    warn "finish this meeting with:  qn redo $(basename "$work")"
+    warn "then stop this watch (ctrl-c) and start it again"
+    return 0
+  fi
+  if [ -s "$work/attendees.txt" ]; then people="$(cat "$work/attendees.txt")"; fi
+  # One meeting at a time. Two runs would race on the roster, the voiceprints
+  # and the index, and two transcriptions on one Mac are slower than the same
+  # two in turn.
+  until mkdir "$REC_DIR/.processing" 2>/dev/null; do sleep 2; done
+  (
+    trap 'rmdir "$REC_DIR/.processing" 2>/dev/null' EXIT
+    process_recording "$work" "$(title_from_id "$(basename "$work")")" "$people"
+  )
+}
+
 cmd_watch() {
   [ -x "$WATCHER" ] || die "the watcher is not built — run: make build"
   [ -x "$RECORDER" ] || die "the recorder is not built — run: make build"
@@ -657,6 +689,8 @@ cmd_watch() {
     die "another qn watch is already recording — stop it first"
   fi
   rm -f "$lock" "$lock.pid"
+  # Left behind by a watch that was killed while it wrote up a meeting.
+  rmdir "$REC_DIR/.processing" 2>/dev/null || true
   # HUP too: closing the terminal window must stop the recorder through
   # this path, so the encoder gets its moment to write the index.
   trap watch_cleanup INT TERM HUP EXIT
@@ -703,22 +737,7 @@ cmd_watch() {
         if [ -s "$lock" ]; then
           work="$(cat "$lock")"
           rm -f "$lock" "$lock.pid"
-          wait_for_consent "$work"
-          if [ "$(read_consent "$work")" = "none" ]; then
-            rm -rf "$work"
-            warn "discarded at your request"
-          elif [ "$(script_fingerprint)" != "$started_as" ]; then
-            # The audio is already on disk and finalised. Only the processing
-            # would run half-old code, so stop short of it and say so.
-            loud "qn changed on disk while this watch was running"
-            warn "your recording is safe, but this watch is running the old version"
-            warn "finish this meeting with:  qn redo $(basename "$work")"
-            warn "then stop this watch (ctrl-c) and start it again"
-          else
-            people=""
-            if [ -s "$work/attendees.txt" ]; then people="$(cat "$work/attendees.txt")"; fi
-            process_recording "$work" "$(title_from_id "$(basename "$work")")" "$people"
-          fi
+          finish_recording "$work" "$started_as" &
         fi
         ;;
     esac

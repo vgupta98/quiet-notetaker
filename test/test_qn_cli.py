@@ -37,6 +37,27 @@ def call_helper(name: str, *args: str, env: dict | None = None) -> str:
     return done.stdout
 
 
+def finish_recording_script(rec_dir, consent, fingerprint, dies):
+    """finish_recording() out of `qn`, with its collaborators stubbed out."""
+    source = QN.read_text()
+    match = re.search(r"^finish_recording\(\) \{.*?^\}", source, re.S | re.M)
+    if match is None:
+        raise AssertionError("finish_recording() no longer exists in qn — update this test")
+    ending = "exit 1" if dies else ":"
+    return f"""
+REC_DIR={rec_dir}
+wait_for_consent() {{ :; }}
+read_consent() {{ printf '%s' {consent}; }}
+script_fingerprint() {{ printf '%s' {fingerprint}; }}
+title_from_id() {{ printf '%s' "$1"; }}
+warn() {{ :; }}
+loud() {{ :; }}
+process_recording() {{ touch "$REC_DIR/processed"; {ending}; }}
+{match.group(0)}
+finish_recording "$@"
+"""
+
+
 def run_qn(*args, env=None, notes=None):
     environment = {**os.environ, "QN_DRY_RUN": "1", "QN_NOTES_DIR": notes or "/tmp/qn-nonexistent"}
     environment.update(env or {})
@@ -348,6 +369,74 @@ class SpeakerMapRanksItsSources(unittest.TestCase):
         self.assertEqual(
             self.speaker_map(),
             '["A: Tom (confirmed)", "B: Aisha (matched)", "C: Marco (guess)"]')
+
+
+class ProcessingRunsBehindTheWatcher(unittest.TestCase):
+    """The watch loop must get back to its event pipe at once.
+
+    Writing up a meeting takes minutes, and the watcher keeps sending events
+    the whole time. Reading them that late stamped the next meeting with the
+    wrong clock time, asked for its consent after it had ended, and captured
+    none of it. So this runs behind the loop — and one meeting at a time,
+    because two runs would race on the roster, the voiceprints and the index.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.rec = pathlib.Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.work = self.rec / "2026-09-04-1500-sdk-standup"
+        self.work.mkdir()
+
+    def finish(self, consent="full", fingerprint="same", dies=False):
+        script = finish_recording_script(self.rec, consent, fingerprint, dies)
+        subprocess.run(["bash", "-c", script, "_", str(self.work), "same"],
+                       capture_output=True, text=True)
+
+    def processed(self):
+        return (self.rec / "processed").exists()
+
+    def queued(self):
+        return (self.rec / ".processing").exists()
+
+    def test_a_refused_meeting_is_deleted_and_never_processed(self):
+        self.finish(consent="none")
+        self.assertFalse(self.work.exists(), "the audio outlived the refusal")
+        self.assertFalse(self.processed())
+
+    def test_a_changed_script_stops_before_processing(self):
+        # Half-old code must not write up a meeting. The audio stays for `qn redo`.
+        self.finish(fingerprint="different")
+        self.assertTrue(self.work.exists())
+        self.assertFalse(self.processed())
+
+    def test_the_queue_is_freed_after_processing(self):
+        self.finish()
+        self.assertTrue(self.processed())
+        self.assertFalse(self.queued(), "the next meeting would wait for ever")
+
+    def test_the_queue_is_freed_when_processing_dies(self):
+        # process_recording calls `die` on a failed transcript, and an exit
+        # skips everything after it. Only the trap frees the queue then.
+        self.finish(dies=True)
+        self.assertTrue(self.processed())
+        self.assertFalse(self.queued(), "a failed meeting blocked every later one")
+
+    def test_a_second_meeting_waits_for_the_first(self):
+        (self.rec / ".processing").mkdir()
+        script = finish_recording_script(self.rec, "full", "same", False)
+        waiting = subprocess.Popen(["bash", "-c", script, "_", str(self.work), "same"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(waiting.wait)
+        self.addCleanup(waiting.terminate)
+        time.sleep(1)
+        self.assertFalse(self.processed(), "two meetings were written up at once")
+        (self.rec / ".processing").rmdir()
+        for _ in range(60):
+            if self.processed():
+                break
+            time.sleep(0.1)
+        self.assertTrue(self.processed(), "the queue never let the second one through")
 
 
 if __name__ == "__main__":

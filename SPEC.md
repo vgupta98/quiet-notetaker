@@ -423,6 +423,11 @@ STOP
 `title` and `attendees` are present only when a calendar event overlaps now.
 Values never contain tabs or newlines. Unknown fields are ignored by readers.
 
+`qn watch` writes up a finished meeting behind itself, one at a time. Doing it
+inline left the loop unable to read its own event pipe: the next meeting was
+stamped with the clock time the loop reached it, was asked for consent after
+it had ended, and captured nothing.
+
 ## MCP tools
 
 Read-only. Four tools. All return JSON.
