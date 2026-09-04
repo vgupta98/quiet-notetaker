@@ -398,21 +398,30 @@ class InAMeeting(unittest.TestCase):
 
     def test_a_short_voice_is_refused_with_its_real_number(self):
         # The defect: "0 min of talking" invited the reader to name a scrap,
-        # and naming it made recognition worse. Now it says 26s, and refuses.
+        # and naming it made recognition worse. Now it says 12s, and refuses.
         self.prints(B=[0.0, 1.0])
-        self.speakers([{"start_ms": 0, "end_ms": 26_300, "speaker": "A"}])
+        self.speakers([{"start_ms": 0, "end_ms": 12_000, "speaker": "A"}])
         message = voices.enrol_from(self.notes, self.work, "A", "Ravi", "full")
-        self.assertIn("0m 26s", message)
+        self.assertIn("0m 12s", message)
         self.assertIn("too little to remember", message)
         self.assertEqual(voices.load(self.notes), {})
 
     def test_a_short_voice_is_refused_even_when_a_print_exists(self):
         # Files written before the floor existed still hold these prints.
         self.prints(A=[1.0, 0.0])
-        self.speakers([{"start_ms": 0, "end_ms": 26_300, "speaker": "A"}])
+        self.speakers([{"start_ms": 0, "end_ms": 12_000, "speaker": "A"}])
         message = voices.enrol_from(self.notes, self.work, "A", "Ravi", "full")
         self.assertIn("too little to remember", message)
         self.assertEqual(voices.load(self.notes), {})
+
+    def test_a_voice_that_earns_a_letter_is_worth_remembering(self):
+        # The floor for a print is the floor for a letter. A separate, higher
+        # one of 60s refused people the answer keys show were never a problem.
+        self.prints(A=[1.0, 0.0])
+        self.speakers([{"start_ms": 0, "end_ms": 26_300, "speaker": "A"}])
+        message = voices.enrol_from(self.notes, self.work, "A", "Ravi", "full")
+        self.assertIn("learned", message)
+        self.assertIn("Ravi", voices.load(self.notes))
 
     def test_a_dropped_sample_never_reports_success(self):
         # The cap keeps the newest. Naming an older meeting when the roster is
@@ -430,7 +439,7 @@ class InAMeeting(unittest.TestCase):
 
     def test_a_short_voice_never_reaches_the_waiting_list(self):
         self.prints(A=[1.0, 0.0], B=[0.0, 1.0])
-        self.speakers([{"start_ms": 0, "end_ms": 26_300, "speaker": "A"},
+        self.speakers([{"start_ms": 0, "end_ms": 12_000, "speaker": "A"},
                        {"start_ms": 0, "end_ms": 120_000, "speaker": "B"}])
         self.assertEqual([letter for _, letter, _ in voices.pending(self.notes)], ["B"])
 

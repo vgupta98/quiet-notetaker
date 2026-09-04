@@ -62,12 +62,6 @@ MIN_SPEAKER_SECONDS = 20.0
 # chances to swallow somebody talking over the top.
 PRINT_SECONDS = 30.0
 
-# Talking time needed before a voice is worth remembering. A 26-second sample
-# cost about 0.03 on every later score, measured before the grouping was
-# rebuilt. Below this a voice keeps its letter and its audio, but is never
-# offered for naming.
-MIN_PRINT_SECONDS = 60.0
-
 # Both models run on one core unless told otherwise. Measured on twelve cores:
 # four threads cut segmentation from 6.6s to 3.1s and the embedding pass from
 # 12.8s to 4.1s. Eight threads bought nothing.
@@ -276,9 +270,18 @@ def talking(labelled: list[dict]) -> dict[str, float]:
 
 
 def worth_remembering(labelled: list[dict]) -> set[str]:
-    """The voices that talked long enough to be recognised later."""
+    """The voices that talked long enough to be recognised later.
+
+    The same floor that earns a letter. A print needs far less audio than that
+    to be reliable — five seconds already separates everybody in the three
+    hand-labelled meetings, see SPEC.md — so no second, higher floor is worth
+    having. The old 60 seconds silenced three people who were never a problem.
+
+    This still filters files written before the letter floor existed. One from
+    3 September holds a print for a voice that talked 26 seconds.
+    """
     return {letter for letter, seconds in talking(labelled).items()
-            if seconds >= MIN_PRINT_SECONDS}
+            if seconds >= MIN_SPEAKER_SECONDS}
 
 
 def print_ranges(labelled: list[dict]) -> dict[str, list[tuple[int, int]]]:

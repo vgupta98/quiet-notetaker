@@ -251,7 +251,7 @@ def recordings_dir(notes_dir: str) -> str:
 def pending(notes_dir: str) -> list[tuple[str, str, float]]:
     """Voices with a print and no name, the most talkative first.
 
-    Everything listed is above MIN_PRINT_SECONDS, so naming any of it helps.
+    Everything listed talked long enough to be worth naming.
     This list is an instruction, and one that harms the reader is a defect.
     """
     root = recordings_dir(notes_dir)

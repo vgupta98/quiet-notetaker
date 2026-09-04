@@ -293,22 +293,18 @@ class WorthRemembering(unittest.TestCase):
         rows = [said("A", 0, 30), said("A", 60_000, 30), said("B", 0, 10)]
         self.assertEqual(diarize.talking(rows), {"A": 60.0, "B": 10.0})
 
-    def test_the_floor_is_the_stated_one(self):
-        just_under = diarize.MIN_PRINT_SECONDS - 0.1
+    def test_the_floor_is_the_one_that_earns_a_letter(self):
+        just_under = diarize.MIN_SPEAKER_SECONDS - 0.1
         self.assertEqual(diarize.worth_remembering([said("A", 0, just_under)]), set())
-        self.assertEqual(diarize.worth_remembering([said("A", 0, diarize.MIN_PRINT_SECONDS)]),
+        self.assertEqual(diarize.worth_remembering([said("A", 0, diarize.MIN_SPEAKER_SECONDS)]),
                          {"A"})
 
-    def test_the_floor_is_higher_than_the_one_for_a_letter(self):
-        # A voice can earn a letter in the transcript and still be too thin to
-        # recognise next month. Measured: a 26-second sample lowered every
-        # later score by about 0.03.
-        self.assertGreater(diarize.MIN_PRINT_SECONDS, diarize.MIN_SPEAKER_SECONDS)
-
-    def test_a_short_voice_keeps_its_letter_and_its_audio(self):
-        rows = [said("A", 0, 26)]
+    def test_a_voice_from_an_older_file_is_still_filtered(self):
+        # Files written before the letter floor existed hold prints for short
+        # voices. Those keep their audio for `qn play` and are never offered.
+        rows = [said("A", 0, 12)]
         self.assertEqual(diarize.worth_remembering(rows), set())
-        self.assertIn("A", diarize.print_ranges(rows))   # qn play still works
+        self.assertIn("A", diarize.print_ranges(rows))
 
 
 class PlayingOneVoice(unittest.TestCase):

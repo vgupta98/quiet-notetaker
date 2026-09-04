@@ -323,11 +323,35 @@ cost 52 KB and match in 0.1 ms — but for drift, since every sample weighs the
 same in the mean. `enrol_from` reports when a sample was dropped for being
 older than the ten kept, so a confirm never claims a success it did not have.
 
-A voice must talk `MIN_PRINT_SECONDS` before it gets a print. Below that it
-keeps its letter, keeps its audio for `qn play`, and is never offered for
-naming. The floor is enforced in three places — when prints are built, in
-`pending`, and in `enrol_from` — because a file written by an earlier version
-still holds prints for short voices.
+A voice must talk `MIN_SPEAKER_SECONDS` before it gets a print — the same floor
+that earns it a letter. Below that it keeps its audio for `qn play` and is never
+offered for naming. The floor is enforced in three places: when prints are
+built, in `pending`, and in `enrol_from`. A file written before that floor
+existed still holds prints for short voices, and one from 3 September holds a
+print for a voice that talked 26 seconds.
+
+There used to be a second, higher floor of 60 seconds, justified by a
+26-second sample costing 0.03 on later scores. That was measured before the
+grouping was rebuilt, when a short group was usually more than one person.
+
+Re-measured against the three answer keys, applying each candidate floor to
+both the stored print and the print it is matched against, which is what
+shipping it does:
+
+| floor | voices kept | worst own | best other | missed | wrong name |
+|---|---|---|---|---|---|
+| none | 13 | 0.483 | 0.503 | 4 | 0 |
+| 5s | 12 | 0.665 | 0.503 | 0 | 0 |
+| 10s | 11 | 0.829 | 0.503 | 0 | 0 |
+| 20s | 10 | 0.854 | 0.409 | 0 | 0 |
+| 60s | 7 | 0.854 | 0.409 | 0 | 0 |
+
+A floor is needed: with none, one person scores 0.483 against himself while
+somebody else scores 0.503. Five seconds separates them, and nothing improves
+past twenty. Sixty silenced three more people, one of whom talked 57 seconds.
+
+No floor ever produced a wrong name. Too small a print misses its owner rather
+than taking somebody else's, which is the recoverable direction.
 
 `lib/voices.py` keeps the roster in `<notes>/.voices.json`:
 
