@@ -519,12 +519,12 @@ if qn_has prune; then
 
   # --older-than 0 makes everything old, but the held one is still protected.
   capture 30 "$TMPROOT/prune0.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$PRUNE_ROOT" \
-    /bin/bash "$QN" --older-than 0d prune
+    /bin/bash "$QN" prune --older-than 0d
   assert_file "$PRUNE_ROOT/.recordings/2026-01-01-1000-old-held/them.m4a" \
     "a held meeting survives --older-than 0d"
 
   capture 30 "$TMPROOT/prune-bad.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$PRUNE_ROOT" \
-    /bin/bash "$QN" --older-than lots prune
+    /bin/bash "$QN" prune --older-than lots
   if [ "$CAPTURE_CODE" -eq 0 ]; then
     fail "--older-than rejects a non-number" "it exited 0"
   else

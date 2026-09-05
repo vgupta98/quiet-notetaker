@@ -399,7 +399,7 @@ transcripts fit in under a gigabyte.**
 
 ```sh
 qn prune                          # delete audio older than 30 days
-qn --older-than 7d prune          # be stricter
+qn prune --older-than 7d          # be stricter
 QN_DRY_RUN=1 qn prune             # see what it would delete
 ```
 
