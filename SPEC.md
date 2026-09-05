@@ -120,6 +120,7 @@ qn play <id> [MM:SS]            play the audio from a timestamp
 qn approve <id>                 send a held (local) meeting to Claude
 qn pending                      list meetings that have no notes yet
 qn watch                        auto-record detected meetings
+qn stop                         end the recording, keep watching
 qn index                        rebuild ~/Meetings/.index.db
 qn vocab                        rebuild and show the learned vocabulary
 qn people                       rebuild and show the roster of who you meet
@@ -464,6 +465,15 @@ Measured here: Zoom is `us.zoom.xos`, a Meet call in Brave is
 because ScreenCaptureKit captures through that daemon. Asking the device
 instead counted our own recorder, so the quiet a stop waits for never came,
 and on the built-in microphone a call never ended.
+
+`qn stop` ends the recording without ending the watch. It writes
+`.recordings/.stop`; the watcher reads that file on its next tick, takes it
+away, and sends STOP. Killing the recorder directly would leave the watcher
+believing the meeting was still on, so the next one would never be noticed.
+
+Nothing starts again until the microphone falls quiet, so stop means stop even
+while the call continues. The four-hour cap does not set that rule: a meeting
+still running then should be cut and carried on, not abandoned.
 
 STOP is also sent once a meeting has run for four hours, whatever the
 microphone says. That is a recorder nobody stopped, and the cap bounds it.

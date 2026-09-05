@@ -79,6 +79,7 @@ struct MeetingStateMachine {
     private(set) var inMeeting = false
     private var quietSince: Date?
     private var startedAt: Date?
+    private var stoppedByHand = false
 
     private mutating func finish() -> MeetingEvent {
         inMeeting = false
@@ -91,16 +92,29 @@ struct MeetingStateMachine {
         micActive: Bool,
         meetingWindow: MeetingWindow?,
         ignoreActive: Bool,
+        stopRequested: Bool,
         now: Date
     ) -> MeetingEvent? {
         guard inMeeting else {
-            guard micActive, !ignoreActive, let window = meetingWindow else { return nil }
+            // `qn stop` means stop, so nothing starts again until the call it
+            // ended is over. Without this the next tick sees the same live
+            // microphone and the same window, and records straight over it.
+            if !micActive { stoppedByHand = false }
+            guard !stoppedByHand, micActive, !ignoreActive,
+                  let window = meetingWindow else { return nil }
             inMeeting = true
             quietSince = nil
             startedAt = now
             return .start(window)
         }
 
+        if stopRequested {
+            stoppedByHand = true
+            return finish()
+        }
+
+        // The cap does not set `stoppedByHand`: a meeting still running after
+        // four hours should be cut and carried on, not abandoned.
         if let startedAt, now.timeIntervalSince(startedAt) >= Self.maxMeeting { return finish() }
 
         // Inside a meeting the window may be minimised or renamed, so only the
@@ -381,75 +395,112 @@ func runSelfTest() -> Int32 {
     // Starting.
     var machine = MeetingStateMachine()
     check("mic on plus zoom window starts a meeting",
-          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0) == .start(zoom))
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false, now: t0) == .start(zoom))
 
     machine = MeetingStateMachine()
     check("mic on with no meeting window stays quiet",
-          machine.update(micActive: true, meetingWindow: nil, ignoreActive: false, now: t0) == nil)
+          machine.update(micActive: true, meetingWindow: nil, ignoreActive: false, stopRequested: false, now: t0) == nil)
 
     machine = MeetingStateMachine()
     let memos = MeetingWindow(owner: "Voice Memos", name: "Voice Memos")
     check("mic on with Voice Memos stays quiet",
           machine.update(micActive: true,
                          meetingWindow: classifyWindow(owner: memos.owner, name: memos.name) ? memos : nil,
-                         ignoreActive: false, now: t0) == nil)
+                         ignoreActive: false, stopRequested: false, now: t0) == nil)
 
     machine = MeetingStateMachine()
     check("the ignore file blocks the start",
-          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: true, now: t0) == nil)
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: true, stopRequested: false, now: t0) == nil)
 
     machine = MeetingStateMachine()
-    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0)
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false, now: t0)
     check("a second start needs an intervening stop",
-          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: at(5)) == nil)
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false, now: at(5)) == nil)
 
     // Stopping.
     machine = MeetingStateMachine()
-    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0)
-    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: t0)
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false, now: t0)
+    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, stopRequested: false, now: t0)
     check("two quiet seconds do not stop the meeting",
-          machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(2)) == nil)
+          machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, stopRequested: false, now: at(2)) == nil)
     check("six quiet seconds stop the meeting",
-          machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(6)) == .stop)
+          machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, stopRequested: false, now: at(6)) == .stop)
     check("the meeting is over after the stop", machine.inMeeting == false)
 
     machine = MeetingStateMachine()
-    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0)
-    _ = machine.update(micActive: false, meetingWindow: zoom, ignoreActive: false, now: t0)
-    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: at(3))
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false, now: t0)
+    _ = machine.update(micActive: false, meetingWindow: zoom, ignoreActive: false, stopRequested: false, now: t0)
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false, now: at(3))
     check("the microphone coming back cancels the stop",
-          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: at(20)) == nil)
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false, now: at(20)) == nil)
     check("the meeting survives the audio device switch", machine.inMeeting == true)
 
     machine = MeetingStateMachine()
-    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0)
-    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: t0)
-    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(6))
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false, now: t0)
+    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, stopRequested: false, now: t0)
+    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, stopRequested: false, now: at(6))
     check("a stop is emitted once",
-          machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(60)) == nil)
+          machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, stopRequested: false, now: at(60)) == nil)
 
     // The cap, which is the only stop a live microphone cannot postpone.
     machine = MeetingStateMachine()
-    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0)
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false, now: t0)
     check("a live microphone does not keep a meeting past four hours",
-          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false,
                          now: at(4 * 60 * 60)) == .stop)
     check("the meeting is over after the cap", machine.inMeeting == false)
 
     machine = MeetingStateMachine()
-    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0)
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false, now: t0)
     check("a meeting one second under the cap is left alone",
-          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false,
                          now: at(4 * 60 * 60 - 1)) == nil)
 
     machine = MeetingStateMachine()
-    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: t0)
-    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(6))
-    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, now: at(12))
-    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, now: at(13))
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false, now: t0)
+    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, stopRequested: false, now: at(6))
+    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false, stopRequested: false, now: at(12))
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false, now: at(13))
     check("the cap is measured from this meeting, not the one before it",
-          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false, stopRequested: false,
                          now: at(4 * 60 * 60)) == nil)
+
+    // `qn stop`.
+    machine = MeetingStateMachine()
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+                       stopRequested: false, now: t0)
+    check("a stop request ends the meeting at once",
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+                         stopRequested: true, now: at(5)) == .stop)
+    check("the meeting is over after a stop request", machine.inMeeting == false)
+    check("a live microphone does not start it again",
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+                         stopRequested: false, now: at(7)) == nil)
+    check("still nothing minutes later",
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+                         stopRequested: false, now: at(600)) == nil)
+    _ = machine.update(micActive: false, meetingWindow: nil, ignoreActive: false,
+                       stopRequested: false, now: at(610))
+    check("the next call starts once the microphone has been quiet",
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+                         stopRequested: false, now: at(620)) == .start(zoom))
+
+    machine = MeetingStateMachine()
+    check("a stop request outside a meeting starts nothing and stops nothing",
+          machine.update(micActive: false, meetingWindow: nil, ignoreActive: false,
+                         stopRequested: true, now: t0) == nil)
+    check("and the next meeting is unaffected",
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+                         stopRequested: false, now: at(5)) == .start(zoom))
+
+    machine = MeetingStateMachine()
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+                       stopRequested: false, now: t0)
+    _ = machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+                       stopRequested: false, now: at(4 * 60 * 60))
+    check("the four-hour cap carries on recording, unlike a stop request",
+          machine.update(micActive: true, meetingWindow: zoom, ignoreActive: false,
+                         stopRequested: false, now: at(4 * 60 * 60 + 2)) == .start(zoom))
 
     // Window classification.
     let positives: [(String, String)] = [
@@ -498,14 +549,16 @@ func runSelfTest() -> Int32 {
 /// Joins the microphone, the window list and the calendar to the state machine.
 final class Watcher {
     private let ignoreWhile: String?
+    private let stopWhen: String?
     private let calendar = CalendarLookup()
     private let queue = DispatchQueue(label: "qn.watcher")
     private var machine = MeetingStateMachine()
     private var monitor: MicMonitor!
     private var timer: DispatchSourceTimer?
 
-    init(ignoreWhile: String?) {
+    init(ignoreWhile: String?, stopWhen: String?) {
         self.ignoreWhile = ignoreWhile
+        self.stopWhen = stopWhen
         // The listener fires on any thread, so it hands the work to the same
         // serial queue as the timer and the state machine stays single-owner.
         monitor = MicMonitor { [unowned self] in self.queue.async { self.tick() } }
@@ -530,9 +583,17 @@ final class Watcher {
         // microphone says something might be happening.
         let window = micActive ? currentMeetingWindow() : nil
         let ignoreActive = ignoreWhile.map { FileManager.default.fileExists(atPath: $0) } ?? false
+        // Taken away as it is read. A request that arrives between meetings has
+        // nothing to stop, and must not stop the next one instead.
+        var stopRequested = false
+        if let stopWhen, FileManager.default.fileExists(atPath: stopWhen) {
+            stopRequested = true
+            try? FileManager.default.removeItem(atPath: stopWhen)
+        }
 
         let event = machine.update(
-            micActive: micActive, meetingWindow: window, ignoreActive: ignoreActive, now: now)
+            micActive: micActive, meetingWindow: window, ignoreActive: ignoreActive,
+            stopRequested: stopRequested, now: now)
 
         switch event {
         case .start(let window):
@@ -547,6 +608,7 @@ final class Watcher {
 }
 
 var ignoreWhile: String?
+var stopWhen: String?
 var selfTest = false
 var arguments = Array(CommandLine.arguments.dropFirst())
 while let argument = arguments.first {
@@ -561,9 +623,16 @@ while let argument = arguments.first {
         }
         arguments.removeFirst()
         ignoreWhile = path
+    case "--stop-when":
+        guard let path = arguments.first else {
+            note("--stop-when needs a path")
+            exit(2)
+        }
+        arguments.removeFirst()
+        stopWhen = path
     default:
         note("unknown argument: \(argument)")
-        note("usage: watcher [--ignore-while <path>] [--self-test]")
+        note("usage: watcher [--ignore-while <path>] [--stop-when <path>] [--self-test]")
         exit(2)
     }
 }
@@ -572,4 +641,4 @@ if selfTest {
     exit(runSelfTest())
 }
 
-Watcher(ignoreWhile: ignoreWhile).run()
+Watcher(ignoreWhile: ignoreWhile, stopWhen: stopWhen).run()

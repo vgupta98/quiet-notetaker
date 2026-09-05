@@ -4,6 +4,7 @@
 #
 #   qn record [title...]              record until Ctrl-C, then process
 #   qn watch                          record detected meetings by itself
+#   qn stop                           end the recording, keep watching
 #   qn redo <id>                      rebuild notes from a recording
 #   qn --notes-only redo <id>         rebuild notes, reuse the words
 #   qn approve <id>                   send a held meeting to Claude
@@ -732,8 +733,10 @@ cmd_watch() {
     die "another qn watch is already recording — stop it first"
   fi
   rm -f "$lock" "$lock.pid"
-  # Left behind by a watch that was killed while it wrote up a meeting.
+  # Left behind by a watch that was killed while it wrote up a meeting, or by
+  # a `qn stop` that nothing was listening for.
   rmdir "$REC_DIR/.processing" 2>/dev/null || true
+  rm -f "$REC_DIR/.stop"
   # HUP too: closing the terminal window must stop the recorder through
   # this path, so the encoder gets its moment to write the index.
   trap watch_cleanup INT TERM HUP EXIT
@@ -741,7 +744,8 @@ cmd_watch() {
   started_as="$(script_fingerprint)"
   step "watching for meetings — ctrl-c to stop"
 
-  "$WATCHER" --ignore-while "$lock" | while IFS= read -r line; do  # noqa: seam
+  "$WATCHER" --ignore-while "$lock" --stop-when "$REC_DIR/.stop" \
+    | while IFS= read -r line; do  # noqa: seam
     local verb rest title people work id
     verb="${line%%	*}"
     rest="${line#*	}"
@@ -782,6 +786,19 @@ cmd_watch() {
         ;;
     esac
   done
+}
+
+# Ends the meeting `qn watch` is recording, without ending the watch. The
+# watcher owns the meeting state and is a separate process, so killing the
+# recorder here would leave it believing the meeting is still on, and the next
+# one would never be noticed. This asks it instead, and it answers within a
+# tick. Nothing starts again until the microphone falls quiet, so stop means
+# stop even while you stay on the call.
+cmd_stop() {
+  local lock="$REC_DIR/.recording"
+  [ -s "$lock" ] || die "nothing is recording"
+  : > "$REC_DIR/.stop"
+  step "stopping $(basename "$(cat "$lock")") — the notes follow in the background"
 }
 
 cmd_redo() {
@@ -1299,6 +1316,7 @@ done
 # with priya" records a meeting instead of rebuilding the index.
 case "${1:-}:$#" in
   watch:1)          cmd_watch; exit $? ;;
+  stop:1)           cmd_stop; exit $? ;;
   pending:1)        cmd_pending; exit $? ;;
   index:1)          cmd_index; exit $? ;;
   vocab:1)          cmd_vocab; exit $? ;;

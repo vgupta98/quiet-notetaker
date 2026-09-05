@@ -580,5 +580,45 @@ class QuittingHonoursTheRefusal(unittest.TestCase):
         self.assertFalse((self.rec / ".recording").exists())
 
 
+class StoppingByHand(unittest.TestCase):
+    """`qn stop` ends the recording without ending the watch.
+
+    The watcher owns the meeting state and is a separate process, so this asks
+    it through a file rather than killing anything itself.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.notes = pathlib.Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.rec = self.notes / ".recordings"
+        self.rec.mkdir()
+
+    def test_it_refuses_when_nothing_is_recording(self):
+        done = run_qn("stop", notes=str(self.notes))
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("nothing is recording", done.stdout + done.stderr)
+        self.assertFalse((self.rec / ".stop").exists())
+
+    def test_it_asks_the_watcher_and_names_the_meeting(self):
+        (self.rec / ".recording").write_text(str(self.rec / "2026-09-05-1500-sdk-standup"))
+        done = run_qn("stop", notes=str(self.notes))
+        self.assertEqual(done.returncode, 0)
+        self.assertTrue((self.rec / ".stop").exists(), "the watcher was never asked")
+        self.assertIn("2026-09-05-1500-sdk-standup", done.stdout + done.stderr)
+
+    def test_it_kills_nothing_itself(self):
+        # Killing the recorder here would leave the watcher believing the
+        # meeting is still on, and the next one would never be noticed.
+        recorder = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(recorder.wait)
+        self.addCleanup(recorder.terminate)
+        (self.rec / ".recording").write_text(str(self.rec / "m"))
+        (self.rec / ".recording.pid").write_text(str(recorder.pid))
+        run_qn("stop", notes=str(self.notes))
+        time.sleep(0.5)
+        self.assertIsNone(recorder.poll(), "qn stop killed the recorder itself")
+
+
 if __name__ == "__main__":
     unittest.main()

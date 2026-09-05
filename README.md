@@ -37,12 +37,14 @@ first use.
 ./qn --with "Priya, Arjun" record sync  # name who is there
 ./qn --local record 1:1 with manager    # transcribe, never send to Claude
 ./qn watch                              # record detected meetings by itself
+./qn stop                               # end this recording, keep watching
 ```
 
 `watch` starts recording the moment a call begins, then asks how to handle it.
 The recording never waits for your answer, so you never lose the first minute.
 Back-to-back calls become separate meetings, and the notes for one are written
-while the next is already recording.
+while the next is already recording. `qn stop` ends a recording early without
+stopping the watch, and nothing starts again until the call is over.
 
 | Answer | What happens |
 |---|---|
