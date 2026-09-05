@@ -620,5 +620,61 @@ class StoppingByHand(unittest.TestCase):
         self.assertIsNone(recorder.poll(), "qn stop killed the recorder itself")
 
 
+class BackupsKeepTheWriting(unittest.TestCase):
+    """The backup exists to save a hand edit. A transcript is not one.
+
+    It is rebuilt from `transcript.txt` on every write, so copying it into the
+    backup stored the same words a sixth time.
+    """
+
+    NOTE = "\n".join([
+        "---", 'title: "SDK Sync"', "sharing: full", "---", "",
+        "# SDK Sync", "", "## Summary", "- my own words, edited by hand", "",
+        "---", "", "## Transcript", "", "```",
+        "[00:01] Me: a line of talking",
+        "[00:09] Them A: another line", "```", "",
+    ])
+
+    def backup(self, body):
+        directory = tempfile.mkdtemp()
+        note = os.path.join(directory, "2026-09-04-1500-sdk-sync.md")
+        pathlib.Path(note).write_text(body, encoding="utf-8")
+        call_helper("backup_note", note)
+        return pathlib.Path(note + ".bak").read_text(encoding="utf-8")
+
+    def test_what_a_person_wrote_survives(self):
+        kept = self.backup(self.NOTE)
+        self.assertIn("my own words, edited by hand", kept)
+        self.assertIn('title: "SDK Sync"', kept)
+
+    def test_the_transcript_is_left_out(self):
+        kept = self.backup(self.NOTE)
+        self.assertNotIn("a line of talking", kept)
+        self.assertNotIn("## Transcript", kept)
+
+    def test_the_backup_says_what_is_missing(self):
+        # Otherwise restoring it drops the transcript with no warning.
+        self.assertIn("not kept in this backup", self.backup(self.NOTE))
+
+    def test_a_note_with_no_transcript_is_kept_whole(self):
+        body = "---\nsharing: local\n---\n\n# Held\n\n_Kept on this Mac._\n"
+        kept = self.backup(body)
+        self.assertIn("Kept on this Mac", kept)
+        self.assertNotIn("not kept in this backup", kept)
+
+    def test_a_long_transcript_does_not_reach_the_backup(self):
+        long_note = self.NOTE.replace(
+            "[00:09] Them A: another line",
+            "\n".join(f"[00:{n:02d}] Them A: line {n}" for n in range(10, 60)))
+        self.assertLess(len(self.backup(long_note)), len(long_note) / 2)
+
+    def test_no_working_file_is_left_behind(self):
+        directory = tempfile.mkdtemp()
+        note = os.path.join(directory, "note.md")
+        pathlib.Path(note).write_text(self.NOTE, encoding="utf-8")
+        call_helper("backup_note", note)
+        self.assertEqual(sorted(os.listdir(directory)), ["note.md", "note.md.bak"])
+
+
 if __name__ == "__main__":
     unittest.main()

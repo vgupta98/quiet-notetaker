@@ -7,6 +7,8 @@ Everything in this repo agrees on the shapes below. Change them here first.
 ```
 ~/Meetings/
   2026-08-20-1535-sdk-sync.md          the note. source of truth.
+  2026-08-20-1535-sdk-sync.md.bak      the note before the last write,
+                                       without its transcript.
   .recordings/2026-08-20-1535-sdk-sync/
       them.m4a  me.m4a  them.json  me.json  transcript.txt  summary.md
       consent                              one word: full | local | none

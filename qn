@@ -465,8 +465,23 @@ write_note() {
 
   # A hand-edited note is the user's, not ours. Keep the old one, and swap
   # atomically so a crash mid-write cannot leave a truncated file.
-  if [ -f "$note" ]; then cp "$note" "$note.bak"; fi
+  if [ -f "$note" ]; then backup_note "$note"; fi
   mv "$note.new" "$note"
+}
+
+# The note as it was, without the transcript. Everything a person may have
+# written by hand sits above `## Transcript`, and everything below it is built
+# from `transcript.txt` every time. Measured over nine backups: the transcript
+# was 285 KB of the 296 KB they held.
+backup_note() {
+  local note="$1"
+  sed '/^## Transcript$/,$d' "$note" > "$note.bak.new"
+  # Say what is missing, so nobody restores this file and loses the transcript
+  # without being told. A note that has none needs no such line.
+  if grep -q '^## Transcript$' "$note"; then
+    printf '_The transcript is not kept in this backup. `qn` rebuilds it._\n' >> "$note.bak.new"
+  fi
+  mv "$note.bak.new" "$note.bak"
 }
 
 # Everything that happens after a recording stops.
