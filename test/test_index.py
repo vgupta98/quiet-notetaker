@@ -579,6 +579,48 @@ class RefreshTests(IndexTestCase):
         return meetings, found
 
 
+class SearchIndexStorageTests(IndexTestCase):
+    """The search index reads the text from `meetings`. It keeps no copy."""
+
+    def fts_check(self) -> None:
+        """FTS5's own audit. It raises when the index and the table disagree."""
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("INSERT INTO meetings_fts(meetings_fts) VALUES('integrity-check')")
+        finally:
+            connection.close()
+
+    def test_the_index_keeps_no_second_copy_of_the_text(self) -> None:
+        # An ordinary fts5 table has a `_content` shadow holding every indexed
+        # column again. An external-content one reads the real table instead.
+        connection = sqlite3.connect(self.db)
+        tables = {row[0] for row in
+                  connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        connection.close()
+        self.assertNotIn("meetings_fts_content", tables)
+
+    def test_a_hit_still_carries_a_snippet(self) -> None:
+        # `snippet()` reads the content table, so it is the first thing an
+        # external-content index would break.
+        hit = index.search(self.db, "retry budget")["results"][0]
+        self.assertIn("retry budget", hit["snippet"])
+
+    def test_the_index_follows_a_rewritten_note(self) -> None:
+        self.fts_check()
+        write_note(self.notes, "2026-08-20-1535-sdk-sync",
+                   SDK_SYNC.replace("retry budget", "retry ceiling"))
+        index.refresh(self.db, self.notes)
+        self.fts_check()
+        self.assertEqual(index.search(self.db, "ceiling")["total"], 1)
+        self.assertEqual(index.search(self.db, '"retry budget"')["total"], 0)
+
+    def test_the_index_follows_a_deleted_note(self) -> None:
+        os.remove(os.path.join(self.notes, "2026-08-20-1535-sdk-sync.md"))
+        index.refresh(self.db, self.notes)
+        self.fts_check()
+        self.assertEqual(index.search(self.db, "retry budget")["total"], 0)
+
+
 class SearchTests(IndexTestCase):
     def test_matched_in_is_notes_for_a_summary_hit(self) -> None:
         hit = index.search(self.db, "retry budget")["results"][0]

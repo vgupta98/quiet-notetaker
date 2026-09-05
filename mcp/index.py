@@ -43,7 +43,7 @@ SHARING_FULL = "full"
 # Bumped whenever the tables change, so an old file is rebuilt instead of read.
 # Version 2 also forces a rescan of every note, because version 1 was written
 # by a parser that indexed a note whose sharing value it could not read.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SNIPPET_TOKENS = 14
 MAX_TRANSCRIPT_LINES = 2000
@@ -52,7 +52,7 @@ MAX_TRANSCRIPT_LINES = 2000
 # The reply says what it dropped, so a truncated answer is never silent.
 MAX_LIMIT = 100
 
-_FTS_COLUMNS = {"notes": ("notes_text", 1), "transcript": ("transcript_text", 2)}
+_FTS_COLUMNS = {"notes": ("notes_text", 0), "transcript": ("transcript_text", 1)}
 
 _TRANSCRIPT_HEADING = re.compile(r"^##[ \t]+Transcript[ \t]*$", re.MULTILINE)
 _FENCE = re.compile(r"^```[^\n]*\n(?P<body>.*?)^```", re.MULTILINE | re.DOTALL)
@@ -398,6 +398,10 @@ def _ensure_schema(connection: sqlite3.Connection, *, rebuild: bool) -> None:
             "DROP TABLE IF EXISTS meetings_fts;"
             "DROP TABLE IF EXISTS meetings;"
         )
+        # Dropped pages stay in the file until a vacuum. Without this the file
+        # never gives the space back, and a schema change that halves the
+        # content leaves the same size on disk.
+        connection.execute("VACUUM")
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS meetings (
@@ -418,12 +422,30 @@ def _ensure_schema(connection: sqlite3.Connection, *, rebuild: bool) -> None:
             done       INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS actions_by_meeting ON actions(meeting_id);
+
+        -- An external-content index: it reads the text from `meetings` instead
+        -- of keeping a second copy. Measured on 13 meetings, the copy was
+        -- 384 KB of a 1.29 MB file. `snippet()` still works, which is what
+        -- search returns.
         CREATE VIRTUAL TABLE IF NOT EXISTS meetings_fts USING fts5(
-            meeting_id UNINDEXED,
             notes_text,
             transcript_text,
+            content='meetings',
+            content_rowid='rowid',
             tokenize='porter unicode61'
         );
+
+        -- The index now follows the table rather than being written beside it.
+        -- `_write_note` deletes the row and inserts it again, so an update
+        -- trigger would never fire and is not written.
+        CREATE TRIGGER IF NOT EXISTS meetings_fts_insert AFTER INSERT ON meetings BEGIN
+            INSERT INTO meetings_fts(rowid, notes_text, transcript_text)
+            VALUES (new.rowid, new.notes_text, new.transcript_text);
+        END;
+        CREATE TRIGGER IF NOT EXISTS meetings_fts_delete AFTER DELETE ON meetings BEGIN
+            INSERT INTO meetings_fts(meetings_fts, rowid, notes_text, transcript_text)
+            VALUES ('delete', old.rowid, old.notes_text, old.transcript_text);
+        END;
         """
     )
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -431,7 +453,7 @@ def _ensure_schema(connection: sqlite3.Connection, *, rebuild: bool) -> None:
 
 def _delete_note(connection: sqlite3.Connection, meeting_id: str) -> None:
     connection.execute("DELETE FROM actions WHERE meeting_id = ?", (meeting_id,))
-    connection.execute("DELETE FROM meetings_fts WHERE meeting_id = ?", (meeting_id,))
+    # The trigger takes the row out of the search index.
     connection.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
 
 
@@ -445,10 +467,6 @@ def _write_note(connection: sqlite3.Connection, note: dict[str, Any], fingerprin
             json.dumps(note["attendees"], ensure_ascii=False),
             note["sharing"], fingerprint, note["notes_text"], note["transcript_text"],
         ),
-    )
-    connection.execute(
-        "INSERT INTO meetings_fts (meeting_id, notes_text, transcript_text) VALUES (?, ?, ?)",
-        (note["id"], note["notes_text"], note["transcript_text"]),
     )
     connection.executemany(
         "INSERT INTO actions (meeting_id, whose, owner, text, done) VALUES (?, ?, ?, ?, ?)",
@@ -574,8 +592,10 @@ def _column_hits(connection: sqlite3.Connection, query: str, field: str) -> list
     """Run the query against one FTS column. Returns (id, snippet, rank)."""
     column, position = _FTS_COLUMNS[field]
     sql = (
-        f"SELECT meeting_id, snippet(meetings_fts, {position}, '', '', ' … ', {SNIPPET_TOKENS})"
+        f"SELECT meetings.id AS meeting_id,"
+        f" snippet(meetings_fts, {position}, '', '', ' … ', {SNIPPET_TOKENS})"
         " AS snip, bm25(meetings_fts) AS rank FROM meetings_fts"
+        " JOIN meetings ON meetings.rowid = meetings_fts.rowid"
         " WHERE meetings_fts MATCH ? ORDER BY rank"
     )
     for text in (_plain_query(query), _quote_query(query)):
