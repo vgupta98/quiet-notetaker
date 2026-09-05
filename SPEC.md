@@ -80,6 +80,11 @@ waiting leaves no notes and a consent that reads `full`.
 Acting on it only at the end of the meeting recorded the whole meeting first,
 and a crash in between kept what it had.
 
+Quitting the watch honours a refusal too. `watch_cleanup` reads the consent
+before it reports, so Ctrl-C cannot turn "do not record" into a saved recording
+with an offer to transcribe it. It fails closed the other way: anything not
+positively read as `none` is kept.
+
 `consent` is written with `local` before the recorder captures a sample, so a
 crash cannot leave a shareable meeting. That means its presence says nothing
 about whether anyone has answered, and `consent.answered` is what says so. A

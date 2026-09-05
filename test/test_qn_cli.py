@@ -67,6 +67,24 @@ finish_recording "$@"
 """
 
 
+def watch_cleanup_script(rec_dir, wait=1):
+    """watch_cleanup() out of `qn`, with only its printing stubbed out.
+
+    read_consent, discard_recording and stop_recorder are the real ones: what
+    a refusal does on the way out is the behaviour under test.
+    """
+    return f"""
+REC_DIR={rec_dir}
+RECORDER_WAIT={wait}
+warn() {{ printf 'warn: %s\\n' "$1"; }}
+{bash_function("read_consent")}
+{bash_function("discard_recording")}
+{bash_function("stop_recorder")}
+{bash_function("watch_cleanup")}
+watch_cleanup
+"""
+
+
 def run_qn(*args, env=None, notes=None):
     environment = {**os.environ, "QN_DRY_RUN": "1", "QN_NOTES_DIR": notes or "/tmp/qn-nonexistent"}
     environment.update(env or {})
@@ -498,6 +516,68 @@ class RefusingStopsTheRecordingNow(unittest.TestCase):
         self.assertIsNone(self.recorder.poll(), "it stopped the next meeting's recorder")
         self.assertTrue((self.rec / ".recording").exists(), "it took the next meeting's lock")
         self.assertFalse(self.work.exists(), "the refused audio survived")
+
+
+class QuittingHonoursTheRefusal(unittest.TestCase):
+    """Ctrl-C must not turn "do not record" into a saved recording.
+
+    watch_cleanup never read the consent, so quitting kept the audio and
+    printed an invitation to transcribe it. Found on disk: a refused call with
+    23 MB of audio and a `qn redo` suggestion beside it.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.rec = pathlib.Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.work = self.rec / "2026-09-05-1500-sdk-standup"
+        self.work.mkdir()
+        (self.work / "me.m4a").write_bytes(b"audio")
+        self.recorder = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(self.recorder.wait)
+        self.addCleanup(self.recorder.terminate)
+        (self.rec / ".recording").write_text(str(self.work))
+        (self.rec / ".recording.pid").write_text(str(self.recorder.pid))
+
+    def quit_watch(self, consent):
+        (self.work / "consent").write_text(consent + "\n")
+        done = subprocess.run(["bash", "-c", watch_cleanup_script(self.rec)],
+                              capture_output=True, text=True)
+        return done.stdout + done.stderr
+
+    def test_a_refused_recording_is_deleted_on_the_way_out(self):
+        said = self.quit_watch("none")
+        self.assertFalse(self.work.exists(), "quitting kept audio the user refused")
+        self.assertNotIn("qn redo", said, "it offered to transcribe a refusal")
+        self.assertIn("the audio is gone", said)
+
+    def test_a_kept_recording_is_still_saved_and_named(self):
+        said = self.quit_watch("full")
+        self.assertTrue(self.work.exists())
+        self.assertIn("qn redo 2026-09-05-1500-sdk-standup", said)
+
+    def test_an_unanswered_dialog_keeps_the_recording(self):
+        # read_consent fails closed to `local`. Only an explicit refusal deletes.
+        said = self.quit_watch("")
+        self.assertTrue(self.work.exists(), "silence was read as a refusal")
+        self.assertIn("qn redo", said)
+
+    def test_a_recorder_that_will_not_die_does_not_hold_the_watch(self):
+        # The loop cannot read its own event pipe while this waits, so the wait
+        # is bounded. It used to be a plain `wait` with no limit at all.
+        stubborn = subprocess.Popen(["bash", "-c", 'trap "" TERM; sleep 30'])
+        self.addCleanup(stubborn.wait)
+        self.addCleanup(stubborn.kill)
+        (self.rec / ".recording.pid").write_text(str(stubborn.pid))
+        started = time.monotonic()
+        self.quit_watch("full")
+        self.assertLess(time.monotonic() - started, 5, "a stuck recorder held the watch")
+        self.assertIsNone(stubborn.poll(), "it died after all — test proves nothing")
+
+    def test_the_recorder_is_stopped_and_reaped_either_way(self):
+        self.quit_watch("full")
+        self.assertIsNotNone(self.recorder.poll(), "the recorder outlived the watch")
+        self.assertFalse((self.rec / ".recording").exists())
 
 
 if __name__ == "__main__":

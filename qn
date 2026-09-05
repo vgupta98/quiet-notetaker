@@ -80,6 +80,8 @@ PROMPT="$HERE/prompt.md"
 PLAY_WINDOW="$(setting "${QN_PLAY_WINDOW:-}" play_window 60)"
 MIC_SECONDS="${QN_MIC_SECONDS:-8}"
 CONSENT_WAIT="${QN_CONSENT_WAIT:-90}"
+# How long to let the recorder close its files before giving up on it.
+RECORDER_WAIT="${QN_RECORDER_WAIT:-20}"
 PRUNE_DAYS="$(setting "${QN_PRUNE_DAYS:-}" prune_days 30)"
 
 # A bad number in the config file must fail here, with the file named, rather
@@ -649,21 +651,41 @@ cmd_record() {
   process_recording "$work" "$title" "$people"
 }
 
+# Stop the recorder and let it close the files properly. A killed AVAssetWriter
+# leaves an .m4a with no moov atom, which nothing can play or transcribe.
+#
+# SIGTERM, not SIGINT: a background job in a non-interactive shell starts with
+# SIGINT ignored, and an ignored signal cannot be trapped.
+#
+# Bounded, because the watch loop cannot read its own event pipe while it waits
+# here, and a recorder that will not die would hold it for ever.
+stop_recorder() {
+  local pid="$1" waited=0
+  kill -TERM "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$RECORDER_WAIT" ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  # Reaped only once it has gone. `wait` on a live child would block for
+  # exactly as long as the bound above exists to prevent.
+  if ! kill -0 "$pid" 2>/dev/null; then wait "$pid" 2>/dev/null || true; fi
+}
+
 # Quitting must not leave the microphone open or a half-written file behind.
 watch_cleanup() {
-  local lock="$REC_DIR/.recording" waited=0 recorder=""
+  local lock="$REC_DIR/.recording" work="" stopped=no
+  if [ -s "$lock" ]; then work="$(cat "$lock")"; fi
   if [ -s "$lock.pid" ]; then
-    recorder="$(cat "$lock.pid")"
-    kill -TERM "$recorder" 2>/dev/null || true
-    # Give it time to close the file properly. A killed AVAssetWriter leaves
-    # an .m4a with no moov atom, which nothing can play or transcribe.
-    while kill -0 "$recorder" 2>/dev/null && [ "$waited" -lt 20 ]; do
-      sleep 1
-      waited=$((waited + 1))
-    done
-    if [ -s "$lock" ]; then
-      warn "recording saved — run: qn redo $(basename "$(cat "$lock")")"
-    fi
+    stop_recorder "$(cat "$lock.pid")"
+    stopped=yes
+  fi
+  # A refusal outlives the watch. Quitting must never turn "do not record" into
+  # a saved recording with an offer to transcribe it.
+  if [ -n "$work" ] && [ "$(read_consent "$work")" = "none" ]; then
+    discard_recording "$work"
+    warn "not recording — the audio is gone"
+  elif [ -n "$work" ] && [ "$stopped" = yes ]; then
+    warn "recording saved — run: qn redo $(basename "$work")"
   fi
   rm -f "$lock" "$lock.pid"
 }
@@ -751,12 +773,7 @@ cmd_watch() {
         ask_consent "$work" "$title"
         ;;
       STOP)
-        # SIGTERM, not SIGINT: a background job in a non-interactive shell
-        # starts with SIGINT ignored, and an ignored signal cannot be trapped.
-        if [ -s "$lock.pid" ]; then
-          kill -TERM "$(cat "$lock.pid")" 2>/dev/null || true
-          wait "$(cat "$lock.pid")" 2>/dev/null || true
-        fi
+        if [ -s "$lock.pid" ]; then stop_recorder "$(cat "$lock.pid")"; fi
         if [ -s "$lock" ]; then
           work="$(cat "$lock")"
           rm -f "$lock" "$lock.pid"
