@@ -46,15 +46,17 @@ func classifyWindow(owner: String, name: String) -> Bool {
 
     // Google Meet titles its tab "Meet - <name>", with either dash, in any
     // browser. The owner is the browser, so the name is the only signal.
-    if nameHas("Meet – ") || nameHas("Meet - ") { return true }
-
-    if ownerHas("Microsoft Teams") {
-        return !name.isEmpty && name.compare("Microsoft Teams", options: .caseInsensitive) != .orderedSame
-    }
+    // Anchored at the start, because anywhere in the title also matched a
+    // document called "Sprint Meet - agenda" in any app at all.
+    if name.hasPrefix("Meet – ") || name.hasPrefix("Meet - ") { return true }
 
     if ownerHas("Slack") && nameHas("Huddle") { return true }
 
-    if ownerHas("Webex") { return true }
+    // Teams and Webex both name the window after the call. A window that
+    // carries only the name of the app is an app that is open, not a call.
+    if ownerHas("Microsoft Teams") || ownerHas("Webex") {
+        return !name.isEmpty && name.compare(owner, options: .caseInsensitive) != .orderedSame
+    }
 
     return false
 }
@@ -522,8 +524,11 @@ func runSelfTest() -> Int32 {
         ("zoom.us", "Zoom"),
         ("Microsoft Teams", "Microsoft Teams"),
         ("Microsoft Teams", ""),
+        ("Webex", "Webex"),
+        ("Webex", ""),
         ("Slack", "RudderStack"),
         ("QuickTime Player", "Audio Recording"),
+        ("Notes", "Sprint Meet - agenda"),
     ]
     for (owner, name) in negatives {
         check("not a meeting window: \(owner) / \(name)", !classifyWindow(owner: owner, name: name))
