@@ -304,7 +304,8 @@ func currentMeetingWindow() -> MeetingWindow? {
     for window in windows {
         let owner = window[kCGWindowOwnerName as String] as? String ?? ""
         // Without Screen Recording permission macOS hides every window name,
-        // and then no rule can match. `qn doctor` is the place that reports it.
+        // and then no rule can match. `--check-permission` is how `qn doctor`
+        // asks, so the answer comes from this binary rather than a guess.
         let name = window[kCGWindowName as String] as? String ?? ""
         if classifyWindow(owner: owner, name: name) {
             return MeetingWindow(owner: owner, name: name)
@@ -615,12 +616,15 @@ final class Watcher {
 var ignoreWhile: String?
 var stopWhen: String?
 var selfTest = false
+var checkPermission = false
 var arguments = Array(CommandLine.arguments.dropFirst())
 while let argument = arguments.first {
     arguments.removeFirst()
     switch argument {
     case "--self-test":
         selfTest = true
+    case "--check-permission":
+        checkPermission = true
     case "--ignore-while":
         guard let path = arguments.first else {
             note("--ignore-while needs a path")
@@ -637,9 +641,17 @@ while let argument = arguments.first {
         stopWhen = path
     default:
         note("unknown argument: \(argument)")
-        note("usage: watcher [--ignore-while <path>] [--stop-when <path>] [--self-test]")
+        note("usage: watcher [--ignore-while <path>] [--stop-when <path>]"
+             + " [--self-test] [--check-permission]")
         exit(2)
     }
+}
+
+// Asked by `qn doctor`. It must come from this binary: macOS grants the
+// permission per application, so any other process would answer for itself.
+// Preflight only, because prompting belongs to a first run and not to a check.
+if checkPermission {
+    exit(CGPreflightScreenCaptureAccess() ? 0 : 1)
 }
 
 if selfTest {

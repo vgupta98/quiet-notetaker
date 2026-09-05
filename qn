@@ -1336,6 +1336,11 @@ cmd_doctor() {
   check "recorder built"  "[ -x '$RECORDER' ]"     "make build"
   check "watcher built"   "[ -x '$WATCHER' ]"      "make build"
   check "notes folder"    "[ -d '$NOTES_DIR' ]"    "it appears after your first meeting"
+  # Detection reads window names, and macOS hides every one of them without
+  # this. The microphone alone never starts a recording, so a meeting would
+  # simply never be noticed, with no error anywhere.
+  check "screen recording" "[ -x '$WATCHER' ] && '$WATCHER' --check-permission" \
+        "System Settings > Privacy & Security > Screen Recording — switch it on for the app you run qn from, then quit and reopen it"
 
   # A `qn` on your PATH that points at a moved or deleted repo gives confusing
   # errors everywhere else. Name the problem here instead.

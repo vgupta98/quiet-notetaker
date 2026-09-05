@@ -789,6 +789,39 @@ assert_eq "0" "$CAPTURE_CODE" "a recording with auto_prune on still exits 0"
 assert_eq "present" "$(held_audio old-held)" "auto_prune never deletes held audio, even with yes set"
 
 # --------------------------------------------------------------------------
+section "qn doctor reports Screen Recording permission"
+# --------------------------------------------------------------------------
+# Without it macOS hides every window name, no rule in `classifyWindow` can
+# match, and a meeting is simply never noticed. There is no error anywhere, so
+# `doctor` is the only place a person finds out.
+guard_notes_dir
+
+# The real watcher answers for the real permission, which a test cannot set.
+# What is tested is that `doctor` asks, and reports both answers.
+PERM_BIN="$TMPROOT/permbin"
+mkdir -p "$PERM_BIN"
+
+printf '#!/bin/sh\nexit 0\n' > "$PERM_BIN/watcher"
+chmod +x "$PERM_BIN/watcher"
+capture 30 "$TMPROOT/perm-ok.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+  QN_WATCHER="$PERM_BIN/watcher" /bin/bash "$QN" doctor
+assert_contains "$(cat "$TMPROOT/perm-ok.out")" "screen recording" \
+  "qn doctor reports the screen recording permission"
+assert_missing "$(cat "$TMPROOT/perm-ok.out")" "Privacy & Security" \
+  "a granted permission says nothing about System Settings"
+
+printf '#!/bin/sh\nexit 1\n' > "$PERM_BIN/watcher"
+capture 30 "$TMPROOT/perm-no.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+  QN_WATCHER="$PERM_BIN/watcher" /bin/bash "$QN" doctor
+assert_contains "$(cat "$TMPROOT/perm-no.out")" "Privacy & Security" \
+  "a denied permission says where to switch it on"
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "qn doctor fails when the permission is missing" "it exited 0"
+else
+  pass "qn doctor fails when the permission is missing"
+fi
+
+# --------------------------------------------------------------------------
 section "qn doctor --mic"
 # --------------------------------------------------------------------------
 # doctor proves the permissions are granted. Only this proves the microphone
