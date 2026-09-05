@@ -285,6 +285,10 @@ class InAMeeting(unittest.TestCase):
     def read(self, filename):
         return voices.read_letters(self.work, filename)
 
+    def skip(self, text):
+        with open(os.path.join(self.work, "skipped.txt"), "w", encoding="utf-8") as h:
+            h.write(text)
+
     # -- matching --------------------------------------------------------
 
     def test_a_known_voice_is_written_to_matched(self):
@@ -333,6 +337,21 @@ class InAMeeting(unittest.TestCase):
         self.prints(A=[1.0, 0.0], B=[1.0, 0.0])
         voices.write_letters(self.work, "confirmed.txt", {"A": "Tom"})
         self.assertEqual(voices.match_recording(self.notes, self.work, 0.5), {"B": "Aisha"})
+
+    def test_a_letter_you_skipped_is_left_alone(self):
+        # `qn skip` says this group is not one person. The next `qn redo` runs
+        # the match again, and it must not put a name back on it.
+        voices.save(self.notes, roster(Aisha=[("m0", "A", [1.0, 0.0])]))
+        self.prints(A=[1.0, 0.0], B=[1.0, 0.0])
+        self.skip("A\n")
+        self.assertEqual(voices.match_recording(self.notes, self.work, 0.5), {"B": "Aisha"})
+
+    def test_a_skip_file_is_read_letter_by_letter(self):
+        self.skip("a\n\nC\n")
+        self.assertEqual(voices.read_skipped(self.work), {"A", "C"})
+
+    def test_no_skip_file_skips_nothing(self):
+        self.assertEqual(voices.read_skipped(self.work), set())
 
     # -- enrolling -------------------------------------------------------
 
@@ -387,6 +406,19 @@ class InAMeeting(unittest.TestCase):
         self.prints(A=[1.0, 0.0])
         voices.write_letters(self.work, "matched.txt", {"A": "Aisha"})
         self.assertEqual(voices.pending(self.notes), [])
+
+    def test_a_skipped_voice_is_not_waiting(self):
+        self.prints(A=[1.0, 0.0])
+        self.speakers([{"start_ms": 0, "end_ms": 120_000, "speaker": "A"}])
+        self.skip("A\n")
+        self.assertEqual(voices.pending(self.notes), [])
+
+    def test_skipping_one_voice_leaves_the_others_waiting(self):
+        self.prints(A=[1.0, 0.0], B=[0.0, 1.0])
+        self.speakers([{"start_ms": 0, "end_ms": 120_000, "speaker": "A"},
+                       {"start_ms": 0, "end_ms": 90_000, "speaker": "B"}])
+        self.skip("A\n")
+        self.assertEqual([letter for _, letter, _ in voices.pending(self.notes)], ["B"])
 
     def test_no_recordings_folder_is_not_an_error(self):
         self.assertEqual(voices.pending(tempfile.mkdtemp()), [])

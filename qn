@@ -15,6 +15,7 @@
 #   qn vocab                          show the words it has learned
 #   qn people                         show who you meet, and add notes
 #   qn confirm <id> <letter> <name>   say who a voice really was
+#   qn skip <id> <letter>             stop asking about a voice
 #   qn voices [--sweep]               show the voices it can recognise
 #   qn forget <name>                  stop recognising that voice
 #   qn prune [--older-than 30d]       delete old audio, keep the notes
@@ -1061,31 +1062,15 @@ cmd_prune() {
   fi
 }
 
-# You were in the room. Nothing else here can say that, so a confirmation
-# outranks every guess and is the only thing allowed to put a name on a line.
-cmd_confirm() {
-  local id="$1" letter="$2" name="$3" work note
-  work="$(resolve_recording "$id")"
+# `qn confirm` and `qn skip` both answer for one voice group in one meeting, so
+# both refuse an unknown one in the same words.
+#
+# speakers.json is the list of voices, not the transcript: once you confirm A
+# the transcript says "Marco:", and reading there would refuse to let you
+# correct your own answer.
+require_voice() {
+  local work="$1" letter="$2" id voices
   id="$(basename "$work")"
-  note="$NOTES_DIR/$id.md"
-
-  letter="$(printf '%s' "$letter" | tr '[:lower:]' '[:upper:]')"
-  case "$letter" in
-    [A-Z]) ;;
-    *) die "the voice is a single letter, like: qn confirm $id A \"Marco\"" ;;
-  esac
-  # A newline here would end the frontmatter line early, and a name is typed
-  # by a person but pasted from anywhere.
-  name="$(printf '%s' "$name" | tr -d '\n\r\t' | sed 's/^ *//; s/ *$//')"
-  [ -n "$name" ] || die "give a name: qn confirm $id $letter \"Marco\""
-
-  if [ ! -s "$work/transcript.txt" ]; then
-    die "$id has no transcript yet"
-  fi
-  # speakers.json is the list of voices, not the transcript. Once you confirm
-  # A the transcript says "Marco:", and checking there would refuse to let you
-  # correct your own answer.
-  local voices
   voices="$(python3 -c '
 import json, sys
 try:
@@ -1100,8 +1085,64 @@ print(" ".join(sorted({str(r.get("speaker","")) for r in rows if r.get("speaker"
   case " $voices " in
     *" $letter "*) ;;
     *) warn "no voice $letter in $id — it has: $voices"
-       die "nothing to confirm" ;;
+       die "no such voice" ;;
   esac
+}
+
+# One voice group letter, upper case. Empty when the argument is not one, so
+# each caller can name its own command in the error.
+voice_letter() {
+  local letter
+  letter="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+  case "$letter" in
+    [A-Z]) printf '%s' "$letter" ;;
+  esac
+}
+
+# Take one letter off the skip list. Silent when it was never on it.
+unskip_voice() {
+  local work="$1" letter="$2"
+  [ -s "$work/skipped.txt" ] || return 0
+  grep -vx "$letter" "$work/skipped.txt" > "$work/skipped.new" 2>/dev/null || true
+  mv "$work/skipped.new" "$work/skipped.txt"
+}
+
+# The transcript and the note carry the names, so both are rewritten whenever
+# a name changes. Called by `qn confirm` and by `qn skip`.
+rewrite_names() {
+  local work="$1" id="$2" note="$NOTES_DIR/$2.md"
+  python3 "$HERE/lib/merge.py" "$work" > "$work/transcript.new" \
+    && mv "$work/transcript.new" "$work/transcript.txt"
+
+  if [ -f "$note" ]; then
+    write_note "$work" "$note" "$(title_from_id "$id")" "$(when_from_id "$id")" \
+               "$(python3 "$HERE/lib/people.py" "$NOTES_DIR" --display \
+                    "$(cat "$work/attendees.txt" 2>/dev/null || true)" 2>/dev/null || true)" \
+               "$(read_consent "$work")" \
+               "$(sed -n 's/^capture: *//p' "$note" | head -1)" \
+               "$(sed -n 's/^warnings: *//p' "$note" | head -1)"
+    refresh_index_quietly
+  fi
+}
+
+# You were in the room. Nothing else here can say that, so a confirmation
+# outranks every guess and is the only thing allowed to put a name on a line.
+cmd_confirm() {
+  local id="$1" letter="$2" name="$3" work
+  work="$(resolve_recording "$id")"
+  id="$(basename "$work")"
+
+  letter="$(voice_letter "$letter")"
+  [ -n "$letter" ] || die "the voice is a single letter, like: qn confirm $id A \"Marco\""
+  # A newline here would end the frontmatter line early, and a name is typed
+  # by a person but pasted from anywhere.
+  name="$(printf '%s' "$name" | tr -d '\n\r\t' | sed 's/^ *//; s/ *$//')"
+  [ -n "$name" ] || die "give a name: qn confirm $id $letter \"Marco\""
+
+  if [ ! -s "$work/transcript.txt" ]; then
+    die "$id has no transcript yet"
+  fi
+  require_voice "$work" "$letter"
 
   # Kept beside the audio, so `qn redo` applies it again instead of losing it.
   touch "$work/confirmed.txt"
@@ -1116,6 +1157,10 @@ print(" ".join(sorted({str(r.get("speaker","")) for r in rows if r.get("speaker"
     mv "$work/matched.new" "$work/matched.txt"
   fi
 
+  # A voice you skipped and can now name is no longer skipped. A skip made by
+  # mistake has to be undoable, or one wrong word loses that voice for good.
+  unskip_voice "$work" "$letter"
+
   # The learning step. It reports what it did, including refusing to learn
   # from a meeting you kept to yourself.
   local learned
@@ -1127,22 +1172,55 @@ print(" ".join(sorted({str(r.get("speaker","")) for r in rows if r.get("speaker"
   # B and C too, and the list stops asking about them.
   match_voices "$work"
 
-  python3 "$HERE/lib/merge.py" "$work" > "$work/transcript.new" \
-    && mv "$work/transcript.new" "$work/transcript.txt"
-
-  if [ -f "$note" ]; then
-    write_note "$work" "$note" "$(title_from_id "$id")" "$(when_from_id "$id")" \
-               "$(python3 "$HERE/lib/people.py" "$NOTES_DIR" --display \
-                    "$(cat "$work/attendees.txt" 2>/dev/null || true)" 2>/dev/null || true)" \
-               "$(read_consent "$work")" \
-               "$(sed -n 's/^capture: *//p' "$note" | head -1)" \
-               "$(sed -n 's/^warnings: *//p' "$note" | head -1)"
-    refresh_index_quietly
-  fi
+  rewrite_names "$work" "$id"
 
   step "Them $letter is $name, in $id"
   if [ -n "$learned" ]; then step "$learned"; fi
   step "run 'qn --notes-only redo $id' to rewrite the notes with that name"
+}
+
+# Some voice groups cannot be named honestly: two people the segmenter merged
+# into one, a video playing in the room, somebody nobody recognises. Confirming
+# a name was the only way off the waiting list, and that teaches the roster a
+# voiceprint under a name that is not one voice. This answers the question
+# without telling the roster anything.
+cmd_skip() {
+  local id="$1" letter="$2" work named=no was
+  work="$(resolve_recording "$id")"
+  id="$(basename "$work")"
+
+  letter="$(voice_letter "$letter")"
+  [ -n "$letter" ] || die "the voice is a single letter, like: qn skip $id A"
+  require_voice "$work" "$letter"
+
+  # Your own answer outranks everything else here, so a skip must not delete
+  # one quietly.
+  if [ -s "$work/confirmed.txt" ]; then
+    was="$(sed -n "s/^$letter=//p" "$work/confirmed.txt" | head -1)"
+  fi
+  if [ -n "$was" ]; then
+    warn "you confirmed voice $letter in $id as $was"
+    die "change it with:  qn confirm $id $letter \"<name>\""
+  fi
+
+  # Kept beside the audio, so `qn redo` applies it again instead of losing it.
+  touch "$work/skipped.txt"
+  if ! grep -qx "$letter" "$work/skipped.txt"; then
+    printf '%s\n' "$letter" >> "$work/skipped.txt"
+  fi
+
+  # A name the roster guessed for this group goes with it. To say "this is not
+  # one person" and leave its name on the lines would contradict itself.
+  if [ -s "$work/matched.txt" ] && grep -q "^$letter=" "$work/matched.txt"; then
+    named=yes
+    grep -v "^$letter=" "$work/matched.txt" > "$work/matched.new" 2>/dev/null || true
+    mv "$work/matched.new" "$work/matched.txt"
+    rewrite_names "$work" "$id"
+  fi
+
+  step "no longer asking about voice $letter in $id"
+  if [ "$named" = yes ]; then step "its lines say Them $letter again"; fi
+  step "name it later with:  qn confirm $id $letter \"<name>\""
 }
 
 # The roster of voices, and the ones it heard but could not place.
@@ -1316,6 +1394,8 @@ case "${1:-}:$#" in
   confirm:4)        cmd_confirm "$2" "$3" "$4"; exit $? ;;
   confirm:1|confirm:2|confirm:3)
                     die "usage: qn confirm <id> <letter> <name>" ;;
+  skip:3)           cmd_skip "$2" "$3"; exit $? ;;
+  skip:1|skip:2)    die "usage: qn skip <id> <letter>" ;;
   voices:1)         cmd_voices; exit $? ;;
   voices:2)
     case "$2" in

@@ -272,7 +272,7 @@ qn_has() {
 
 # SPEC.md, "CLI surface". Every one of these must exist. A rename is a broken
 # contract, so it fails here instead of quietly skipping the tests below.
-for sub in redo play index pending approve vocab people prune confirm doctor; do
+for sub in redo play index pending approve vocab people prune confirm skip doctor; do
   if qn_has "$sub"; then
     pass "qn has the $sub subcommand"
   else
@@ -974,6 +974,108 @@ guess_note="$(cat "$voice_note")"
 assert_contains "$guess_note" "B: Lena (guess)" "Claude's guess is recorded as a guess"
 assert_contains "$guess_note" "A: Marco (confirmed)" "your answer outranks Claude's guess"
 assert_missing "$guess_note" "## Speakers" "the speakers section is lifted out of the note body"
+
+# --------------------------------------------------------------------------
+section "qn skip"
+# --------------------------------------------------------------------------
+# Some voice groups cannot be named honestly: two people the segmenter merged
+# into one, or a video playing in the room. Skipping one takes it off the
+# waiting list and tells the roster nothing. Naming it instead would teach a
+# voiceprint under a name that is not one voice.
+guard_notes_dir
+
+SKIP_DIR="$TMPROOT/skip"
+SKIP_WORK="$SKIP_DIR/.recordings/2026-05-06-1100-planning"
+mkdir -p "$SKIP_WORK"
+printf 'full\n' > "$SKIP_WORK/consent"
+printf 'Marco, Lena\n' > "$SKIP_WORK/attendees.txt"
+printf 'audio' > "$SKIP_WORK/them.m4a"
+printf 'audio' > "$SKIP_WORK/me.m4a"
+cat > "$SKIP_WORK/them.json" <<'JSONEOF'
+{"transcription":[
+ {"offsets":{"from":0,"to":2000},"text":" shall I start the release"},
+ {"offsets":{"from":9000,"to":11000},"text":" yes go ahead"}]}
+JSONEOF
+cat > "$SKIP_WORK/speakers.json" <<'JSONEOF'
+[{"start_ms":0,"end_ms":3000,"speaker":"A"},
+ {"start_ms":8000,"end_ms":12000,"speaker":"B"}]
+JSONEOF
+# A roster that recognises B. Without a skip it names that group at every redo,
+# which is what makes the test below prove something.
+printf '{"A":[1.0,0.0],"B":[0.0,1.0]}\n' > "$SKIP_WORK/voiceprints.json"
+printf '{"people":{"Lena":[{"from":"2026-05-01-1000-old","voice":"B","vector":[0.0,1.0]}]}}\n' \
+  > "$SKIP_DIR/.voices.json"
+printf 'A=Marco\n' > "$SKIP_WORK/confirmed.txt"
+python3 "$ROOT/lib/merge.py" "$SKIP_WORK" > "$SKIP_WORK/transcript.txt"
+
+skip_qn() { # skip_qn <outfile> <args...>
+  local out="$1"; shift
+  capture 30 "$out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$SKIP_DIR" \
+    QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
+    /bin/bash "$QN" "$@"
+}
+
+# A letter nobody spoke is refused here too, in the same words.
+skip_qn "$TMPROOT/skip-bad.out" skip "2026-05-06-1100-planning" Q
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "skipping a voice that is not there fails" "it exited 0"
+else
+  pass "skipping a voice that is not there fails"
+fi
+assert_contains "$(cat "$TMPROOT/skip-bad.out")" "it has: A B" "the refusal lists the voices it does have"
+
+# Your own answer must never be deleted quietly.
+skip_qn "$TMPROOT/skip-confirmed.out" skip "2026-05-06-1100-planning" A
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "skipping a confirmed voice fails" "it exited 0"
+else
+  pass "skipping a confirmed voice fails"
+fi
+assert_contains "$(cat "$TMPROOT/skip-confirmed.out")" "as Marco" "the refusal says who you called it"
+assert_eq "A=Marco" "$(cat "$SKIP_WORK/confirmed.txt")" "the confirmation is untouched"
+
+# The roster names B, so there is something for the skip to take away.
+python3 "$ROOT/lib/voices.py" "$SKIP_DIR" --match "$SKIP_WORK" > /dev/null
+assert_eq "B=Lena" "$(cat "$SKIP_WORK/matched.txt" 2>/dev/null)" "the roster recognises the second voice"
+python3 "$ROOT/lib/merge.py" "$SKIP_WORK" > "$SKIP_WORK/transcript.txt"
+assert_contains "$(cat "$SKIP_WORK/transcript.txt")" "Lena:" "and its guess reaches the transcript"
+
+# A name the roster guessed goes with the group. To say "this is not one
+# person" and leave its name on the lines would contradict itself.
+skip_qn "$TMPROOT/skip.out" skip "2026-05-06-1100-planning" b
+assert_eq "0" "$CAPTURE_CODE" "qn skip exits 0"
+assert_eq "B" "$(cat "$SKIP_WORK/skipped.txt")" "the skip is kept beside the audio"
+assert_eq "" "$(cat "$SKIP_WORK/matched.txt" 2>/dev/null)" "the guess is dropped"
+assert_contains "$(cat "$SKIP_WORK/transcript.txt")" "Them B:" "its lines go back to the letter"
+assert_missing "$(cat "$SKIP_WORK/transcript.txt")" "Lena:" "the name it was given is gone"
+assert_contains "$(cat "$SKIP_WORK/transcript.txt")" "Marco:" "the confirmed voice keeps its name"
+
+# Skipping twice must not write the letter twice.
+skip_qn "$TMPROOT/skip-twice.out" skip "2026-05-06-1100-planning" B
+assert_eq "B" "$(cat "$SKIP_WORK/skipped.txt")" "skipping the same voice again changes nothing"
+
+# The match runs again at every redo. This is the one that matters: the roster
+# still recognises that voice, and must not be allowed to name it.
+python3 "$ROOT/lib/voices.py" "$SKIP_DIR" --match "$SKIP_WORK" > /dev/null
+assert_eq "" "$(cat "$SKIP_WORK/matched.txt" 2>/dev/null)" "re-matching does not name a skipped voice"
+skip_qn "$TMPROOT/skip-redo.out" redo "2026-05-06-1100-planning"
+assert_eq "0" "$CAPTURE_CODE" "qn redo exits 0 after a skip"
+assert_eq "B" "$(cat "$SKIP_WORK/skipped.txt")" "a skip survives qn redo"
+assert_eq "" "$(cat "$SKIP_WORK/matched.txt" 2>/dev/null)" "and qn redo does not name it either"
+
+# A skip made by mistake has to be undoable, or one wrong word loses a voice.
+skip_qn "$TMPROOT/skip-undo.out" confirm "2026-05-06-1100-planning" B "Lena"
+assert_eq "0" "$CAPTURE_CODE" "confirming a skipped voice exits 0"
+assert_eq "" "$(cat "$SKIP_WORK/skipped.txt")" "confirming a voice takes it off the skip list"
+assert_eq "B=Lena" "$(cat "$SKIP_WORK/confirmed.txt" | grep '^B=')" "and the answer is recorded"
+
+# The letter is not optional.
+skip_qn "$TMPROOT/skip-usage.out" skip "2026-05-06-1100-planning"
+if [ "$CAPTURE_CODE" -eq 0 ]; then
+  fail "qn skip needs a letter" "it exited 0"
+else
+  pass "qn skip needs a letter"
+fi
 
 # --------------------------------------------------------------------------
 section "a watch whose script changed under it"

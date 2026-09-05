@@ -249,6 +249,23 @@ From then on that voice is **Marco** in the transcript, not `Them A`. Your
 answer is kept beside the audio, so `qn redo` never loses it, and you can
 correct it by confirming the same letter again.
 
+### A voice you cannot name honestly
+
+Some groups are not one person: two people the grouping merged, or a video
+playing in the room. Naming one teaches the tool a voice that does not exist,
+and it gets worse at recognising everybody.
+
+```sh
+qn skip 2026-08-24-1500-sdk-standup D
+```
+
+That takes the voice off the list and tells the roster nothing. Its lines keep
+saying `Them D`, which is the truth. If the roster had already guessed a name
+for it, the guess goes and the transcript is rewritten without it.
+
+The skip is kept beside the audio, so `qn redo` keeps it. Confirming a name for
+that letter undoes it, so a skip by mistake costs nothing.
+
 ### Hearing a voice before you name it
 
 A letter tells you nothing about who it is. Listen first:
@@ -293,9 +310,11 @@ qn voices
     Ravi   2 samples  last 2026-09-02
 
   waiting to be named
-    2026-08-31-1507-sdk-standup  B  6 min of talking
+    2026-08-31-1507-sdk-standup  B  6m 44s of talking
 
   name one with:  qn confirm <id> <letter> "<name>"
+  hear one first:  qn play <id> <letter>
+  stop asking:     qn skip <id> <letter>
 ```
 
 Each confirmation adds one sample. A person's stored voice is the average of
@@ -306,14 +325,15 @@ stops improving. The model itself never changes — only the roster does.
 sample, which helps. Naming A also re-checks B and C, so they usually leave the
 list on their own.
 
-**The list never offers a voice worth under a minute.** A short sample makes
-recognition worse, not better. Measured: a 26-second sample of a colleague,
-stored beside a good one, pulled every later score down by about 0.03. A
-248-second sample of the same person pulled them up by 0.08. So `qn voices`
-shows only voices above 60 seconds, and `qn confirm` refuses the rest:
+**The list never offers a voice under 20 seconds.** A short sample makes
+recognition worse, not better, and below that floor a voice gets no letter at
+all. Twenty seconds was measured against three meetings labelled by hand: it
+keeps every colleague apart, with the closest true match at 0.854 and the
+closest wrong one at 0.409. `qn voices` shows only voices above it, and `qn
+confirm` refuses the rest:
 
 ```
-voice D talked for 0m 56s — too little to remember
+voice D talked for 0m 12s — too little to remember
 the transcript is named, the roster is unchanged
 ```
 

@@ -125,6 +125,7 @@ qn index                        rebuild ~/Meetings/.index.db
 qn vocab                        rebuild and show the learned vocabulary
 qn people                       rebuild and show the roster of who you meet
 qn confirm <id> <letter> <name> say who a voice group really was
+qn skip <id> <letter>           stop asking about a voice group
 qn voices                       show the recognisable voices, and the unnamed
 qn forget <name>                drop a voice from the roster
 qn prune [--older-than 30d]     delete audio older than N days, keep the notes
@@ -132,8 +133,10 @@ qn doctor                       check dependencies and permissions
 qn doctor --mic                 record a few seconds and measure them
 ```
 
-A subcommand is recognised only when the argument count matches it, so a
-meeting called "index review with priya" records rather than reindexing.
+A subcommand is recognised only when the argument count matches it. A command
+given the wrong number of arguments is an error, and never a different command.
+Flags that belong to one command are read after the verb, like
+`--older-than`; the flags before the verb apply to every command.
 
 `--notes-only` reuses `them.json` and `me.json` instead of running whisper
 again. The words do not change because `prompt.md` did, so a prompt edit costs
@@ -266,6 +269,18 @@ the name instead of the letter, so a `qn redo` keeps the answer. The letter is
 checked against `speakers.json`, not the transcript, so a confirmation can be
 corrected after it has already replaced the label.
 
+`qn skip <id> <letter>` answers for a group that cannot be named honestly: two
+people the segmenter merged, or a video playing in the room. It writes the
+letter into `skipped.txt` beside the audio, one letter a line, and tells the
+roster nothing. Confirming a name was the only way off the waiting list before,
+and that taught a voiceprint under a name that is not one voice.
+
+A skip drops any name the roster had guessed for that letter and rebuilds the
+transcript, because "this is not one person" and a name on its lines contradict
+each other. It refuses a letter in `confirmed.txt`: your own answer is changed
+by confirming a different name, never deleted from the side. `qn confirm` takes
+a letter off `skipped.txt`, so a skip made by mistake is undone by naming it.
+
 ## Voice recognition
 
 `diarize.py` also writes `voiceprints.json`: one vector per letter, built from
@@ -382,7 +397,9 @@ nothing, and `qn confirm` says so.
 
 Every rebuild re-runs the match and rewrites `matched.txt` from scratch, never
 adding to it: after `qn forget`, the next rebuild must drop that name. A letter
-present in `confirmed.txt` is skipped, so re-matching cannot undo your answer.
+in `confirmed.txt` is left alone, so re-matching cannot undo your answer. A
+letter in `skipped.txt` is left alone as well, or the next rebuild would put a
+name back on a group you said was not one person.
 
 `qn voices` lists the roster and the voiceprints with no name. `qn forget
 <name>` drops a person. Neither touches a note already written.

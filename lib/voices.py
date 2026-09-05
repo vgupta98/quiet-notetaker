@@ -193,6 +193,7 @@ def match(people: dict[str, list[dict]], vector: list[float],
 
 MATCHED_FILE = "matched.txt"
 CONFIRMED_FILE = "confirmed.txt"
+SKIPPED_FILE = "skipped.txt"
 
 
 def read_letters(recording_dir: str, filename: str) -> dict[str, str]:
@@ -206,19 +207,35 @@ def write_letters(recording_dir: str, filename: str, named: dict[str, str]) -> N
             handle.write(f"{letter}={named[letter]}\n")
 
 
+def read_skipped(recording_dir: str) -> set[str]:
+    """Voice groups you told it to stop asking about. One letter a line.
+
+    No name, because a skip is the answer of somebody who cannot give one.
+    """
+    try:
+        with open(os.path.join(recording_dir, SKIPPED_FILE), encoding="utf-8") as handle:
+            return {line.strip().upper() for line in handle if line.strip()}
+    except OSError:
+        return set()
+
+
 def match_recording(notes_dir: str, recording_dir: str,
                     threshold: float = MATCH_THRESHOLD) -> dict[str, str]:
     """Name what the roster recognises here. Rewrites matched.txt from scratch.
 
-    Confirmed letters are skipped, so re-running cannot undo your answer, and
-    rewriting rather than adding means `qn forget` actually takes effect.
+    Confirmed letters are left alone, so re-running cannot undo your answer,
+    and rewriting rather than adding means `qn forget` actually takes effect.
+
+    A skipped letter is left alone as well. `qn skip` says this group is not
+    one person, and a match would put a name back on it at the next redo.
     """
     people = load(notes_dir)
     confirmed = read_letters(recording_dir, CONFIRMED_FILE)
+    skipped = read_skipped(recording_dir)
 
     found = {}
     for letter, vector in sorted(diarize.read_prints(recording_dir).items()):
-        if letter in confirmed:
+        if letter in confirmed or letter in skipped:
             continue
         name = match(people, vector, threshold)
         if name is not None:
@@ -265,14 +282,18 @@ def pending(notes_dir: str) -> list[tuple[str, str, float]]:
         work = os.path.join(root, meeting)
         if not os.path.isdir(work):
             continue
-        named = set(read_letters(work, CONFIRMED_FILE)) | set(read_letters(work, MATCHED_FILE))
+        # A skipped voice is not named. It is answered, which is all this
+        # list needs to stop asking about it.
+        answered = (set(read_letters(work, CONFIRMED_FILE))
+                    | set(read_letters(work, MATCHED_FILE))
+                    | read_skipped(work))
         rows = diarize.read_speakers(work)
         seconds, strong = diarize.talking(rows), diarize.worth_remembering(rows)
         for letter in sorted(diarize.read_prints(work)):
             # Short voices are filtered here as well as at build time, so a
             # file written by an earlier version cannot put one back on the
             # list. Nothing this list offers may harm the roster.
-            if letter not in named and letter in strong:
+            if letter not in answered and letter in strong:
                 waiting.append((meeting, letter, seconds.get(letter, 0.0)))
     return sorted(waiting, key=lambda row: (-row[2], row[0], row[1]))
 
@@ -350,9 +371,13 @@ def render(notes_dir: str) -> str:
             lines.append(f"    {meeting:<{width}}  {letter}  {spoken(seconds)} of talking")
         lines += ["", '  name one with:  qn confirm <id> <letter> "<name>"',
                   "  hear one first:  qn play <id> <letter>",
+                  "  stop asking:     qn skip <id> <letter>",
                   "",
                   "  one person is often split across letters. naming each one",
-                  "  gives the roster another sample of them, which helps."]
+                  "  gives the roster another sample of them, which helps.",
+                  "",
+                  "  skip the ones you cannot name honestly. two people in one",
+                  "  group, or a video playing in the room, teach it nothing."]
     else:
         lines.append("    nobody")
 
