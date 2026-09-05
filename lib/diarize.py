@@ -88,7 +88,16 @@ PRINTS_FILE = "voiceprints.json"
 
 
 def models_dir() -> str:
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+    """Where `qn setup` put the model files.
+
+    `qn` exports `QN_MODEL_DIR`, so the answer comes from one place at run
+    time. The default repeats what `qn` computes, and is only reached when
+    this module is run on its own.
+    """
+    default = os.path.join(
+        os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"),
+        "quiet-notetaker", "models")
+    return os.environ.get("QN_MODEL_DIR") or default
 
 
 def model_paths() -> tuple[str, str] | None:

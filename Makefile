@@ -1,8 +1,3 @@
-MODEL_NAME ?= ggml-small.en.bin
-MODEL_URL  ?= https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$(MODEL_NAME)
-VAD_NAME   ?= ggml-silero-v5.1.2.bin
-VAD_URL    ?= https://huggingface.co/ggml-org/whisper-vad/resolve/main/$(VAD_NAME)
-
 SWIFTC = swiftc -O -swift-version 5 -target arm64-apple-macos15.0
 
 # Where `qn` goes on your PATH. This is where the claude CLI installs itself,
@@ -30,32 +25,16 @@ build/watcher: recorder/watcher.swift recorder/WatcherInfo.plist
 	  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker recorder/WatcherInfo.plist \
 	  -o $@ recorder/watcher.swift
 
-# Speech model, plus the voice detector that stops whisper inventing
-# sentences during the long silences on the microphone track.
-models: models/$(MODEL_NAME) models/$(VAD_NAME)
-
-models/$(MODEL_NAME):
-	@mkdir -p models
-	curl -L --progress-bar -o $@ $(MODEL_URL)
-
-models/$(VAD_NAME):
-	@mkdir -p models
-	curl -L --progress-bar -o $@ $(VAD_URL)
+# `qn setup` owns the model files, so their names and URLs live in one place
+# and a Homebrew install can fetch them without a Makefile.
+models: build
+	@./qn setup
 
 # Optional. Groups the `them` track by voice, so Claude gets a hint about who
 # is who. It costs a 49 MB virtual environment, 130 MB of models, and about
 # seven minutes of processing per hour of audio, so it is not part of `all`.
-SEG_URL  ?= https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
-
-# Downloaded but its groups are unused: sherpa will not segment without an
-# embedding model, and which one it gets moves the span boundaries. See SPEC.md.
-EMB_URL  ?= https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_CAM++.onnx
-
-# Does the real work: grouping voices in a meeting, and recognising them in the
-# next one. Chosen over five others on hand-labelled meetings. See SPEC.md.
-VOICE_URL ?= https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_large.onnx
-
-diarize: .venv/bin/python models/segmentation.onnx models/embedding.onnx models/voiceprint.onnx
+diarize: build .venv/bin/python
+	@./qn setup --voices
 	@echo ""
 	@echo "  voice grouping is ready. turn it on in your settings file:"
 	@echo ""
@@ -71,21 +50,6 @@ diarize: .venv/bin/python models/segmentation.onnx models/embedding.onnx models/
 	python3 -m venv .venv
 	./.venv/bin/pip install -q --upgrade pip
 	./.venv/bin/pip install -q sherpa-onnx numpy
-
-models/segmentation.onnx:
-	@mkdir -p models
-	curl -L --progress-bar -o models/seg.tar.bz2 $(SEG_URL)
-	tar xjf models/seg.tar.bz2 -C models
-	mv models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx $@
-	rm -rf models/seg.tar.bz2 models/sherpa-onnx-pyannote-segmentation-3-0
-
-models/embedding.onnx:
-	@mkdir -p models
-	curl -L --progress-bar -o $@ $(EMB_URL)
-
-models/voiceprint.onnx:
-	@mkdir -p models
-	curl -L --progress-bar -o $@ $(VOICE_URL)
 
 test:
 	@test/run.sh

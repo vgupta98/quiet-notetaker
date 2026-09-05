@@ -19,6 +19,7 @@
 #   qn voices [--sweep]               show the voices it can recognise
 #   qn forget <name>                  stop recognising that voice
 #   qn prune [--older-than 30d]       delete old audio, keep the notes
+#   qn setup [--voices]               download the models it needs
 #   qn doctor                         check the setup
 #   qn doctor --mic                   record a few seconds and listen
 #
@@ -73,8 +74,14 @@ else
 fi
 
 REC_DIR="$NOTES_DIR/.recordings"
-MODEL="${QN_MODEL:-$HERE/models/ggml-small.en.bin}"
-VAD_MODEL="${QN_VAD_MODEL:-$HERE/models/ggml-silero-v5.1.2.bin}"
+# The models are 600 MB and never change, so they live outside the checkout.
+# Inside it, a `brew upgrade` would delete them with the old version folder,
+# and a second clone would download every byte again. `qn setup` puts them
+# here, and every copy of `qn` on this Mac shares the one set.
+MODEL_DIR="${QN_MODEL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/quiet-notetaker/models}"
+export QN_MODEL_DIR="$MODEL_DIR"
+MODEL="${QN_MODEL:-$MODEL_DIR/ggml-small.en.bin}"
+VAD_MODEL="${QN_VAD_MODEL:-$MODEL_DIR/ggml-silero-v5.1.2.bin}"
 LANG_CODE="$(setting "${QN_LANG:-}" language en)"
 RECORDER="${QN_RECORDER:-$HERE/build/recorder}"
 WATCHER="${QN_WATCHER:-$HERE/build/watcher}"
@@ -547,7 +554,7 @@ for w in json.load(sys.stdin)["warnings"]:
   else
     # Before transcription, so a slow model does not delay the audio check, and
     # so merge.py finds speakers.json already written.
-    if [ "$DIARIZE" = "yes" ] && [ -x "$VENV_PYTHON" ] && [ -f "$HERE/models/segmentation.onnx" ]; then
+    if [ "$DIARIZE" = "yes" ] && [ -x "$VENV_PYTHON" ] && [ -f "$MODEL_DIR/segmentation.onnx" ]; then
       step "grouping voices — this is slower than the transcript"
       "$VENV_PYTHON" "$HERE/lib/diarize.py" "$work" >/dev/null 2>&1 || \
         warn "voice grouping failed — the transcript is unaffected"
@@ -1238,6 +1245,84 @@ cmd_skip() {
   step "name it later with:  qn confirm $id $letter \"<name>\""
 }
 
+# --------------------------------------------------------------------- setup
+
+SPEECH_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin"
+VAD_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin"
+
+# Groups the `them` track by voice. Chosen over five others on hand-labelled
+# meetings, see SPEC.md.
+SEG_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+EMB_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_CAM++.onnx"
+VOICE_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_large.onnx"
+
+# One model file, fetched once.
+#
+# It downloads to a temporary name and is moved into place, because a download
+# cut off halfway would otherwise look like a finished model next time, and
+# whisper fails on it in a way that reads like a broken recording.
+fetch_model() {
+  local name="$1" url="$2" target="$MODEL_DIR/$1"
+  if [ -f "$target" ]; then step "$name — already here"; return 0; fi
+  # A checkout from before the models moved still has them beside the code.
+  # Moving is 600 MB of downloading avoided.
+  if [ -f "$HERE/models/$name" ]; then
+    mv "$HERE/models/$name" "$target"
+    step "$name — moved out of the checkout"
+    return 0
+  fi
+  step "$name — downloading"
+  curl -fL --progress-bar -o "$target.part" "$url" || die "could not download $name"
+  mv "$target.part" "$target"
+}
+
+# The segmenter arrives inside an archive, unlike the rest.
+fetch_segmentation() {
+  local target="$MODEL_DIR/segmentation.onnx"
+  if [ -f "$target" ]; then step "segmentation.onnx — already here"; return 0; fi
+  if [ -f "$HERE/models/segmentation.onnx" ]; then
+    mv "$HERE/models/segmentation.onnx" "$target"
+    step "segmentation.onnx — moved out of the checkout"
+    return 0
+  fi
+  step "segmentation.onnx — downloading"
+  local work="$MODEL_DIR/.seg"
+  rm -rf "$work"; mkdir -p "$work"
+  curl -fL --progress-bar -o "$work/seg.tar.bz2" "$SEG_URL" || die "could not download the segmenter"
+  tar xjf "$work/seg.tar.bz2" -C "$work" || die "the segmenter archive is unreadable"
+  mv "$work/sherpa-onnx-pyannote-segmentation-3-0/model.onnx" "$target"
+  rm -rf "$work"
+}
+
+# Everything `qn` needs to hear a meeting, kept outside the checkout so an
+# upgrade never deletes it.
+cmd_setup() {
+  local voices="${1:-}"
+  mkdir -p "$MODEL_DIR"
+  loud "models live in $MODEL_DIR"
+  fetch_model ggml-small.en.bin      "$SPEECH_URL"
+  fetch_model ggml-silero-v5.1.2.bin "$VAD_URL"
+
+  if [ "$voices" = "--voices" ]; then
+    fetch_segmentation
+    fetch_model embedding.onnx  "$EMB_URL"
+    fetch_model voiceprint.onnx "$VOICE_URL"
+  fi
+
+  # An empty models folder left in the checkout is a puzzle for the next
+  # person. rmdir refuses if anything is still in there, which is what we want.
+  rmdir "$HERE/models" 2>/dev/null || true
+
+  printf '\n'
+  if [ "$voices" != "--voices" ]; then
+    step "for voice grouping as well:  qn setup --voices  then  make diarize"
+  else
+    step "voice grouping still needs its python packages:  make diarize"
+  fi
+  step "check everything with:  qn doctor"
+  printf '\n'
+}
+
 # The roster of voices, and the ones it heard but could not place.
 cmd_voices() {
   python3 "$HERE/lib/voices.py" "$NOTES_DIR" --list
@@ -1331,8 +1416,8 @@ cmd_doctor() {
   check "ffmpeg"          "command -v ffmpeg"      "brew install ffmpeg"
   check "whisper-cli"     "command -v whisper-cli" "brew install whisper-cpp"
   check "claude"          "command -v claude"      "install the Claude CLI"
-  check "speech model"    "[ -f '$MODEL' ]"        "make models"
-  check "voice detector"  "[ -f '$VAD_MODEL' ]"    "make models"
+  check "speech model"    "[ -f '$MODEL' ]"        "qn setup"
+  check "voice detector"  "[ -f '$VAD_MODEL' ]"    "qn setup"
   check "recorder built"  "[ -x '$RECORDER' ]"     "make build"
   check "watcher built"   "[ -x '$WATCHER' ]"      "make build"
   check "notes folder"    "[ -d '$NOTES_DIR' ]"    "it appears after your first meeting"
@@ -1438,6 +1523,12 @@ case "${1:-}:$#" in
         cmd_prune "$keep_days"; exit $? ;;
     esac
     ;;
+  setup:1)          cmd_setup ""; exit $? ;;
+  setup:2)
+    case "$2" in
+      --voices) cmd_setup --voices; exit $? ;;
+    esac
+    ;;
   doctor:1)         cmd_doctor; exit $? ;;
   doctor:2)
     case "$2" in
@@ -1465,7 +1556,7 @@ case "${1:-}:$#" in
     shift
     need whisper-cli "brew install whisper-cpp"
     need claude "install the Claude CLI"
-    [ -f "$MODEL" ] || die "the speech model is missing — run: make models"
+    [ -f "$MODEL" ] || die "the speech model is missing — run: qn setup"
     cmd_record "$attendees" "$sharing" "${*:-meeting}"
     exit $? ;;
   :0)               usage; exit 0 ;;

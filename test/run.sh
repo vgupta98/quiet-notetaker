@@ -272,7 +272,7 @@ qn_has() {
 
 # SPEC.md, "CLI surface". Every one of these must exist. A rename is a broken
 # contract, so it fails here instead of quietly skipping the tests below.
-for sub in redo play index pending approve vocab people prune confirm skip doctor; do
+for sub in redo play index pending approve vocab people prune confirm skip setup doctor; do
   if qn_has "$sub"; then
     pass "qn has the $sub subcommand"
   else
@@ -787,6 +787,85 @@ capture 60 "$TMPROOT/held-auto.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$HELD_R
   /bin/bash "$QN" redo "$AUTO_WORK"
 assert_eq "0" "$CAPTURE_CODE" "a recording with auto_prune on still exits 0"
 assert_eq "present" "$(held_audio old-held)" "auto_prune never deletes held audio, even with yes set"
+
+# --------------------------------------------------------------------------
+section "qn setup and where the models live"
+# --------------------------------------------------------------------------
+# The models are 600 MB and never change, so they live outside the checkout.
+# Inside it a `brew upgrade` deletes them with the old version folder, and a
+# second clone downloads every byte again.
+guard_notes_dir
+
+SETUP_HOME="$TMPROOT/setup-home"
+mkdir -p "$SETUP_HOME"
+
+# No network in the tests, so `curl` is stubbed. What is tested is where the
+# files are looked for and put, not that Hugging Face is reachable.
+cat > "$STUB/curl" <<'STUBEOF'
+#!/bin/bash
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift 2 ;; *) shift ;; esac
+done
+[ -n "$out" ] || exit 0
+case "$out" in
+  # The segmenter really does arrive inside an archive, so the stub builds a
+  # real one. Otherwise the extraction path would never be tested.
+  *.tar.bz2)
+    work="$(dirname "$out")/build-archive"
+    rm -rf "$work"
+    mkdir -p "$work/sherpa-onnx-pyannote-segmentation-3-0"
+    echo downloaded > "$work/sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
+    tar cjf "$out" -C "$work" sherpa-onnx-pyannote-segmentation-3-0
+    rm -rf "$work" ;;
+  *) echo downloaded > "$out" ;;
+esac
+STUBEOF
+chmod +x "$STUB/curl"
+
+setup_qn() { # setup_qn <outfile> <model-dir> <args...>
+  local out="$1" dir="$2"; shift 2
+  capture 60 "$out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+    QN_MODEL_DIR="$dir" /bin/bash "$QN" "$@"
+}
+
+MODELS_A="$SETUP_HOME/models-a"
+setup_qn "$TMPROOT/setup.out" "$MODELS_A" setup
+assert_eq "0" "$CAPTURE_CODE" "qn setup exits 0"
+assert_file "$MODELS_A/ggml-small.en.bin"      "qn setup fetches the speech model"
+assert_file "$MODELS_A/ggml-silero-v5.1.2.bin" "qn setup fetches the voice detector"
+assert_missing "$(ls "$MODELS_A")" "onnx" "qn setup alone leaves the voice models out"
+
+# A part-written download must never be mistaken for a finished model.
+assert_missing "$(ls "$MODELS_A")" ".part" "no half-written file is left behind"
+
+# Running it again must not download anything a second time.
+printf 'kept
+' > "$MODELS_A/ggml-small.en.bin"
+setup_qn "$TMPROOT/setup2.out" "$MODELS_A" setup
+assert_eq "kept" "$(cat "$MODELS_A/ggml-small.en.bin")" "a model already there is left alone"
+assert_contains "$(cat "$TMPROOT/setup2.out")" "already here" "and it says so"
+
+# --voices adds the three that voice grouping needs.
+MODELS_B="$SETUP_HOME/models-b"
+setup_qn "$TMPROOT/setup3.out" "$MODELS_B" setup --voices
+assert_file "$MODELS_B/segmentation.onnx" "--voices unpacks the segmenter from its archive"
+assert_missing "$(ls "$MODELS_B")" ".seg" "the archive and its scratch folder are cleaned up"
+assert_file "$MODELS_B/embedding.onnx"  "--voices fetches the embedding model"
+assert_file "$MODELS_B/voiceprint.onnx" "--voices fetches the voiceprint model"
+
+# The whole point: the model directory is not inside the checkout.
+assert_missing "$MODELS_A" "$ROOT" "the models do not live in the checkout"
+
+# doctor reads the same place, so a missing model is reported and not guessed.
+MODELS_C="$SETUP_HOME/models-empty"
+mkdir -p "$MODELS_C"
+capture 30 "$TMPROOT/setup-doctor.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
+  QN_MODEL_DIR="$MODELS_C" /bin/bash "$QN" doctor
+assert_contains "$(cat "$TMPROOT/setup-doctor.out")" "qn setup" \
+  "doctor names the command that fixes a missing model"
+
+rm -f "$STUB/curl"
 
 # --------------------------------------------------------------------------
 section "qn doctor reports Screen Recording permission"

@@ -131,6 +131,7 @@ qn skip <id> <letter>           stop asking about a voice group
 qn voices                       show the recognisable voices, and the unnamed
 qn forget <name>                drop a voice from the roster
 qn prune [--older-than 30d]     delete audio older than N days, keep the notes
+qn setup [--voices]             download the models, outside the checkout
 qn doctor                       check dependencies and permissions
 qn doctor --mic                 record a few seconds and measure them
 ```
@@ -424,7 +425,7 @@ out of the body into the frontmatter, and it never names a transcript line.
 `(matched)` comes from the roster. `(confirmed)` comes from `qn confirm` and
 outranks both. `merge.py` applies the same order to the transcript itself.
 
-Everything is optional. Without `make diarize` the models are absent, the step
+Everything is optional. Without `qn setup --voices` the models are absent, the step
 is skipped, and the transcript is byte-identical to one produced without it.
 
 ## Settings
@@ -446,8 +447,16 @@ Precedence is environment, then file, then default, everywhere including the
 MCP server. Claude starts the server itself, so the server never sees the
 shell's environment; the file is the only channel that reaches both sides.
 
-`qn` resolves its own symlinks before locating `models/`, `build/` and its
-helper scripts, so it works from any directory once linked onto `PATH`.
+`qn` resolves its own symlinks before locating `build/` and its helper
+scripts, so it works from any directory once linked onto `PATH`.
+
+The model files are the exception: they live in `QN_MODEL_DIR`, by default
+`~/.local/share/quiet-notetaker/models`, and never inside the checkout. They
+are 600 MB and never change, so a second clone must not download them again
+and a package upgrade must not delete them with the old version. `qn setup`
+fetches them, moves them out of an older checkout that still holds them, and
+does nothing when they are already there. `qn` exports `QN_MODEL_DIR`, so
+`diarize.py` reads the same directory without computing it twice.
 
 `qn doctor --mic` records `QN_MIC_SECONDS` seconds, default 8, and reads the
 result with `health.advise()`. That is a separate judgement from `health.judge()`

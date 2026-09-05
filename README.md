@@ -18,6 +18,11 @@ make install
 `make install` builds the binaries, downloads the models (~466 MB), puts `qn`
 on your PATH, and runs `qn doctor`. Then `qn` works from any folder:
 
+The models go in `~/.local/share/quiet-notetaker/models`, not in the checkout.
+They are large and never change, so every copy of `qn` on your Mac shares one
+set and an upgrade never has to fetch them again. `qn setup` is the command
+that puts them there, and running it twice downloads nothing.
+
 ```sh
 cd ~/anywhere
 qn record team sync
@@ -209,7 +214,8 @@ calendar, so a person typed them.
 can group it by voice:
 
 ```sh
-make diarize        # 49 MB environment, 130 MB of models, all MIT
+qn setup --voices   # 130 MB of models, all MIT
+make diarize        # 49 MB python environment
 ```
 
 Then in your settings file:
@@ -514,12 +520,13 @@ runs and for scripts:
 | `QN_DIARIZE` | `diarize` | `no` |
 | `QN_LANG` | `language` | `en` |
 | `QN_PLAY_WINDOW` | `play_window` | `60` |
-| `QN_MODEL` | — | `models/ggml-small.en.bin` |
+| `QN_MODEL_DIR` | — | `~/.local/share/quiet-notetaker/models` |
+| `QN_MODEL` | — | `ggml-small.en.bin` in `QN_MODEL_DIR` |
 | `QN_CONSENT` | — | unset — asks every time. Set to `full`/`local` to stop asking |
 | `QN_CONFIG` | — | `~/.config/quiet-notetaker/config` |
 
-Better accuracy on hard audio:
-`make models MODEL_NAME=ggml-medium.en.bin`, then set `QN_MODEL`.
+Better accuracy on hard audio: download a larger model into
+`~/.local/share/quiet-notetaker/models`, then point `QN_MODEL` at it.
 
 ## Tests
 
