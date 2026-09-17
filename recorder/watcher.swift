@@ -192,22 +192,42 @@ final class MicMonitor {
         mScope: kAudioObjectPropertyScopeGlobal,
         mElement: kAudioObjectPropertyElementMain)
 
-    /// ScreenCaptureKit takes the microphone through this daemon, so our own
+    /// Bundle ids that hold the microphone without a meeting behind them.
+    ///
+    /// ScreenCaptureKit takes the microphone through replayd, so our own
     /// recorder appears under Apple's name here and not ours. Measured with the
     /// recorder running and no meeting app open: the only process on the input
     /// was com.apple.replayd. Any other ScreenCaptureKit capture is hidden with
     /// it, which is right: a screen recording is not a meeting.
-    private static let ourCapture = "com.apple.replayd"
+    ///
+    /// The Sound pane of System Settings opens the input to draw its level
+    /// meter, and keeps it for as long as the pane shows. One left open at
+    /// 15:07 on 2026-09-17 held the input all afternoon. The call that ended at
+    /// 16:19 never looked quiet, so the watch never stopped it, and the
+    /// recorder ran on into an empty room until someone quit it by hand.
+    static let neverAMeeting: Set<String> = [
+        "com.apple.replayd",
+        "com.apple.Sound-Settings.extension",
+    ]
+
+    /// Whether a process on the input can mean a meeting is running.
+    ///
+    /// An id this does not know is a meeting. A stranger on the microphone
+    /// costs a recording that runs too long, which `qn redo` can still write
+    /// up. Guessing the other way costs the meeting itself.
+    static func countsAsMeeting(_ bundleID: String) -> Bool {
+        !neverAMeeting.contains(bundleID)
+    }
 
     init(onChange: @escaping () -> Void) {
         self.onChange = onChange
     }
 
-    /// True while some process other than our own capture holds the microphone.
+    /// True while some process that could be a meeting holds the microphone.
     func isActive() -> Bool {
         followDefaultDevice()
         return Self.audioProcesses().contains { process in
-            Self.isOnInput(process) && Self.bundleID(process) != Self.ourCapture
+            Self.isOnInput(process) && Self.countsAsMeeting(Self.bundleID(process))
         }
     }
 
@@ -394,6 +414,23 @@ func runSelfTest() -> Int32 {
     let zoom = MeetingWindow(owner: "zoom.us", name: "Zoom Meeting")
     let t0 = Date(timeIntervalSince1970: 1_000_000)
     func at(_ seconds: TimeInterval) -> Date { t0.addingTimeInterval(seconds) }
+
+    // Who on the microphone means a meeting. Only the end of a call reads this:
+    // one holder that is never dropped keeps every call open for ever.
+    check("our own capture is not a meeting",
+          !MicMonitor.countsAsMeeting("com.apple.replayd"))
+    check("the Sound settings pane is not a meeting",
+          !MicMonitor.countsAsMeeting("com.apple.Sound-Settings.extension"))
+    check("a meeting app on the microphone is a meeting",
+          MicMonitor.countsAsMeeting("us.zoom.xos"))
+    check("a browser on the microphone is a meeting",
+          MicMonitor.countsAsMeeting("com.brave.Browser"))
+    // Better a recording that runs long, which qn redo can still write up,
+    // than a call that ends the moment an unknown process takes the input.
+    check("an unknown holder is a meeting",
+          MicMonitor.countsAsMeeting("com.example.whoever"))
+    check("a process with no bundle id is a meeting",
+          MicMonitor.countsAsMeeting(""))
 
     // Starting.
     var machine = MeetingStateMachine()
