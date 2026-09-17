@@ -423,8 +423,9 @@ func runSelfTest() -> Int32 {
           !MicMonitor.countsAsMeeting("com.apple.Sound-Settings.extension"))
     check("a meeting app on the microphone is a meeting",
           MicMonitor.countsAsMeeting("us.zoom.xos"))
-    check("a browser on the microphone is a meeting",
-          MicMonitor.countsAsMeeting("com.brave.Browser"))
+    // A browser call is on the helper, not the browser. Both must pass.
+    check("a browser helper on the microphone is a meeting",
+          MicMonitor.countsAsMeeting("com.brave.Browser.helper"))
     // Better a recording that runs long, which qn redo can still write up,
     // than a call that ends the moment an unknown process takes the input.
     check("an unknown holder is a meeting",
