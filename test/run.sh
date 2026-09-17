@@ -429,6 +429,51 @@ else
   fail "qn pending" "no pending subcommand in qn"
 fi
 
+# 5b. A recording that never became a note at all. `qn pending` asks whether
+# Claude wrote a summary; this asks whether the write-up ran even once. Quitting
+# a watch mid-meeting leaves exactly this, and every count in `qn doctor` starts
+# from the notes, so nothing saw it.
+STRAND_DIR="$TMPROOT/stranded-cases"
+mkdir -p "$STRAND_DIR/.recordings"
+for case in "never-written no" "held-has-note yes" "fully-written yes" "recording-now no"; do
+  sid="$(printf '%s' "$case" | cut -d' ' -f1)"
+  has_note="$(printf '%s' "$case" | cut -d' ' -f2)"
+  strand_work="$STRAND_DIR/.recordings/2026-09-10-0900-$sid"
+  mkdir -p "$strand_work"
+  printf 'full\n' > "$strand_work/consent"
+  if [ "$has_note" = "yes" ]; then
+    printf -- '---\ntitle: "%s"\n---\n' "$sid" > "$STRAND_DIR/2026-09-10-0900-$sid.md"
+  fi
+done
+# A held meeting still gets a note, so it is not stranded even with no summary.
+printf 'local\n' > "$STRAND_DIR/.recordings/2026-09-10-0900-held-has-note/consent"
+printf '%s' "$STRAND_DIR/.recordings/2026-09-10-0900-recording-now" > "$STRAND_DIR/.recordings/.recording"
+
+capture 30 "$TMPROOT/stranded.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$STRAND_DIR" \
+  /bin/bash "$QN" doctor
+stranded="$(cat "$TMPROOT/stranded.out")"
+assert_contains "$stranded" "qn redo 2026-09-10-0900-never-written" \
+  "qn doctor names a recording that never became a note"
+assert_contains "$stranded" "1 recording has no notes yet" \
+  "qn doctor counts it, in the singular"
+assert_missing "$stranded" "held-has-note" \
+  "a held meeting has its note, so it is not stranded"
+assert_missing "$stranded" "fully-written" \
+  "a meeting with a note is not stranded"
+assert_missing "$stranded" "recording-now" \
+  "the recording in progress is not stranded"
+
+# Nothing to say when every recording has its note. A warning on every healthy
+# run is a warning nobody reads.
+CLEAN_DIR="$TMPROOT/stranded-clean"
+mkdir -p "$CLEAN_DIR/.recordings/2026-09-10-0900-all-good"
+printf 'full\n' > "$CLEAN_DIR/.recordings/2026-09-10-0900-all-good/consent"
+printf -- '---\ntitle: "all good"\n---\n' > "$CLEAN_DIR/2026-09-10-0900-all-good.md"
+capture 30 "$TMPROOT/stranded-clean.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$CLEAN_DIR" \
+  /bin/bash "$QN" doctor
+assert_missing "$(cat "$TMPROOT/stranded-clean.out")" "no notes yet" \
+  "qn doctor says nothing when every recording has its note"
+
 # 6. qn people builds the roster, and what you write in it reaches Claude.
 if qn_has people; then
   capture 60 "$TMPROOT/people.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \

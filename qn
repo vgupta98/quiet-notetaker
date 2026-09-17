@@ -760,6 +760,10 @@ cmd_watch() {
   # a `qn stop` that nothing was listening for.
   rmdir "$REC_DIR/.processing" 2>/dev/null || true
   rm -f "$REC_DIR/.stop"
+  # Said before the watch takes over the terminal. The warning the last watch
+  # printed as it quit has long since scrolled away, and this is the next
+  # moment you are certain to be looking.
+  report_stranded
   # HUP too: closing the terminal window must stop the recorder through
   # this path, so the encoder gets its moment to write the index.
   trap watch_cleanup INT TERM HUP EXIT
@@ -847,6 +851,44 @@ cmd_approve() {
   printf 'full\n' > "$work/consent"
   step "sending to claude"
   cmd_redo "$work"
+}
+
+# Recordings that never became a note at all, newest last, one id per line.
+#
+# A held meeting still gets its note, with `sharing: local` and no summary, so
+# it is not stranded. A recording with no note file was never processed: the
+# watch was quit while it ran, or the write-up died partway. Nothing else
+# notices, because every count in `qn doctor` starts from the notes.
+stranded_recordings() {
+  local dir work id active=""
+  if [ -s "$REC_DIR/.recording" ]; then active="$(cat "$REC_DIR/.recording")"; fi
+  for dir in "$REC_DIR"/*/; do
+    if [ ! -d "$dir" ]; then continue; fi
+    work="${dir%/}"
+    id="$(basename "$work")"
+    # The meeting happening right now has not had its turn yet.
+    if [ "$work" = "$active" ]; then continue; fi
+    if [ -f "$NOTES_DIR/$id.md" ]; then continue; fi
+    printf '%s\n' "$id"
+  done
+}
+
+# Says what `stranded_recordings` found, and how to finish it. Called where you
+# would actually see it: starting a watch, and `qn doctor`.
+report_stranded() {
+  local ids count
+  ids="$(stranded_recordings)"
+  [ -n "$ids" ] || return 0
+  count="$(printf '%s\n' "$ids" | wc -l | tr -d ' ')"
+  if [ "$count" = 1 ]; then
+    warn "1 recording has no notes yet:"
+  else
+    warn "$count recordings have no notes yet:"
+  fi
+  printf '%s\n' "$ids" | while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    warn "  qn redo $id"
+  done
 }
 
 # What is waiting is what has no notes yet. That is not the same question as
@@ -1456,6 +1498,13 @@ if counts["total"]:
     print(f"  indexed:  {counts['indexed']} visible to Claude")
     print(f"  held:     {counts['held']} private — never sent")
 PYEOF
+  fi
+
+  # Every count above starts from the notes, so a recording that never became
+  # one is missing from all of them. It has to be counted from the other side.
+  if [ -d "$REC_DIR" ]; then
+    printf '\n'
+    report_stranded
   fi
 
   # Two notes folders, each holding half your meetings, with no error anywhere.
