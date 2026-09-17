@@ -188,10 +188,12 @@ final class TrackWriter {
 final class Sink: NSObject, SCStreamOutput, SCStreamDelegate {
     private let system: TrackWriter
     private let mic: TrackWriter
+    private let stopper: StopWaiter
 
-    init(system: TrackWriter, mic: TrackWriter) {
+    init(system: TrackWriter, mic: TrackWriter, stopper: StopWaiter) {
         self.system = system
         self.mic = mic
+        self.stopper = stopper
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
@@ -202,8 +204,12 @@ final class Sink: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    /// ScreenCaptureKit has given up. No more samples will arrive on either
+    /// track, so end the run and keep what was captured. Waiting instead
+    /// records nothing and delays the notes until someone notices.
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         note("stream stopped: \(error.localizedDescription)")
+        if stopper.stop() { note("ending the recording — keeping what was captured so far") }
     }
 }
 
@@ -236,7 +242,15 @@ final class StopWaiter {
         }
     }
 
-    private func fire(_ received: Int32) {
+    /// Ends the recording the way a signal would, for a caller that is not a
+    /// signal. Returns true when this was the first request.
+    ///
+    /// ScreenCaptureKit stopping needs this. The capture is dead, so the run
+    /// has to finish its files and let the write-up start. Logging and staying
+    /// alive left a recorder holding two dead streams for 34 minutes, and the
+    /// meeting it was in had ended.
+    @discardableResult
+    func stop() -> Bool {
         lock.lock()
         let first = !fired
         fired = true
@@ -244,10 +258,12 @@ final class StopWaiter {
         continuation = nil
         lock.unlock()
 
-        if first {
-            waiting?.resume()
-            return
-        }
+        if first { waiting?.resume() }
+        return first
+    }
+
+    private func fire(_ received: Int32) {
+        if stop() { return }
 
         // Only a second ctrl-c means the user will not wait for the encoder.
         // Leave then, and say what it costs. Without this the only way out of
@@ -349,6 +365,15 @@ func runSelfTest() -> Int32 {
     check("early samples count as loss too",
           lossReport(track: "me.m4a", stats: TrackStats(appended: 100, dropped: 0, early: 2)) != nil)
 
+    // A dead capture ends the run, the same way a signal does. This is what
+    // `didStopWithError` calls, and it must be safe to call twice: both
+    // ScreenCaptureKit and the watch can ask within the same moment.
+    let dead = StopWaiter()
+    check("a stopped capture is not stopped yet", !dead.hasStopped)
+    check("the first stop is the one that ends the run", dead.stop())
+    check("a stopped capture asks for a clean stop", dead.hasStopped)
+    check("a second stop changes nothing", !dead.stop())
+
     // Signals. Every signal that can reach a recording must end it through
     // the encoder. A signal that kills the process instead costs the whole
     // meeting, because the index is written last.
@@ -401,15 +426,16 @@ func record(into directory: URL) async throws {
     let shared = SharedStart()
     let system = try TrackWriter(url: directory.appendingPathComponent("them.m4a"), shared: shared)
     let mic = try TrackWriter(url: directory.appendingPathComponent("me.m4a"), shared: shared)
-    let sink = Sink(system: system, mic: mic)
+    // Armed before the stream exists, because the sink needs it: a capture that
+    // dies has to be able to end the run.
+    let stopper = StopWaiter()
+    stopper.arm()
+    let sink = Sink(system: system, mic: mic, stopper: stopper)
 
     let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
     let stream = SCStream(filter: filter, configuration: config, delegate: sink)
     try stream.addStreamOutput(sink, type: .audio, sampleHandlerQueue: DispatchQueue(label: "qn.sys"))
     try stream.addStreamOutput(sink, type: .microphone, sampleHandlerQueue: DispatchQueue(label: "qn.mic"))
-
-    let stopper = StopWaiter()
-    stopper.arm()
 
     try await stream.startCapture()
 
