@@ -17,9 +17,19 @@ import unittest
 
 from health import Measurement, _parse, advise, judge
 
+# What ffmpeg prints for a clean track. The loudest sample sits at full scale,
+# which is what decoding AAC does, and the loudest thousandth sit 5 dB lower.
 GOOD = """  Duration: 00:03:57.97, start: 0.044000, bitrate: 75 kb/s
+[Parsed_volumedetect_0 @ 0x7cec1c900] n_samples: 0
+[Parsed_volumedetect_0 @ 0x7cec1ce40] n_samples: 22845120
 [Parsed_volumedetect_0 @ 0x7cec1ce40] mean_volume: -32.8 dB
-[Parsed_volumedetect_0 @ 0x7cec1ce40] max_volume: -3.0 dB
+[Parsed_volumedetect_0 @ 0x7cec1ce40] max_volume: -0.0 dB
+[Parsed_volumedetect_0 @ 0x7cec1ce40] histogram_0db: 124
+[Parsed_volumedetect_0 @ 0x7cec1ce40] histogram_1db: 416
+[Parsed_volumedetect_0 @ 0x7cec1ce40] histogram_2db: 928
+[Parsed_volumedetect_0 @ 0x7cec1ce40] histogram_3db: 2760
+[Parsed_volumedetect_0 @ 0x7cec1ce40] histogram_4db: 13310
+[Parsed_volumedetect_0 @ 0x7cec1ce40] histogram_5db: 41172
 """
 
 
@@ -32,12 +42,18 @@ class ParseFfmpegOutput(unittest.TestCase):
         found = _parse(GOOD)
         self.assertAlmostEqual(found.seconds, 237.97, places=2)
         self.assertEqual(found.mean_db, -32.8)
-        self.assertEqual(found.peak_db, -3.0)
+        self.assertEqual(found.loud_db, -5.0)
+
+    def test_one_sample_at_full_scale_is_not_clipping(self):
+        # 30 of 45 real notes carried a clipping warning for a handful of
+        # samples like these, on tracks that were not clipped at all.
+        self.assertEqual(judge({"them": _parse(GOOD), "me": ok()}), [])
 
     def test_missing_values_stay_none(self):
         found = _parse("ffmpeg said nothing useful")
         self.assertIsNone(found.seconds)
         self.assertIsNone(found.mean_db)
+        self.assertIsNone(found.loud_db)
         self.assertFalse(found.present)
 
     def test_duration_over_an_hour(self):
@@ -65,9 +81,14 @@ class Judge(unittest.TestCase):
         self.assertTrue(any("silent" in w for w in warnings))
 
     def test_very_quiet_track_warns_without_claiming_silence(self):
-        warnings = judge({"them": ok(), "me": Measurement(240.0, -45.0, -20.0)})
+        warnings = judge({"them": ok(), "me": Measurement(240.0, -46.0, -30.0)})
         self.assertTrue(any("very quiet" in w for w in warnings))
         self.assertFalse(any("silent" in w for w in warnings))
+
+    def test_saying_little_is_not_a_quiet_microphone(self):
+        # A real stand-up: 138 words in an hour pulled the mean down to
+        # -42.5 dB, on a microphone that was working well.
+        self.assertEqual(judge({"them": ok(), "me": Measurement(240.0, -42.5, -19.0)}), [])
 
     def test_clipping_is_reported(self):
         warnings = judge({"them": ok(), "me": Measurement(240.0, -12.0, 0.0)})
@@ -94,11 +115,11 @@ def report(me=None, them=None):
     return {"tracks": {"me": me, "them": them}}
 
 
-def track(seconds=8.0, mean_db=-28.0, peak_db=-6.0):
-    return {"seconds": seconds, "mean_db": mean_db, "peak_db": peak_db}
+def track(seconds=8.0, mean_db=-28.0, loud_db=-6.0):
+    return {"seconds": seconds, "mean_db": mean_db, "loud_db": loud_db}
 
 
-MISSING = {"seconds": None, "mean_db": None, "peak_db": None}
+MISSING = {"seconds": None, "mean_db": None, "loud_db": None}
 
 
 class MicrophoneTestAdvice(unittest.TestCase):
@@ -138,13 +159,13 @@ class MicrophoneTestAdvice(unittest.TestCase):
         self.assertIn("muted", self.messages(me=track(mean_db=-70.0), them=track()))
 
     def test_a_quiet_microphone_warns_but_does_not_fail(self):
-        self.assertEqual(self.verdicts(me=track(mean_db=-45.0), them=track())[0], "warn")
+        self.assertEqual(self.verdicts(me=track(loud_db=-30.0), them=track())[0], "warn")
 
     def test_a_clipping_microphone_warns(self):
-        self.assertEqual(self.verdicts(me=track(peak_db=-0.1), them=track())[0], "warn")
+        self.assertEqual(self.verdicts(me=track(loud_db=0.0), them=track())[0], "warn")
 
     def test_an_unreadable_microphone_track_fails(self):
-        broken = {"seconds": 8.0, "mean_db": None, "peak_db": None}
+        broken = {"seconds": 8.0, "mean_db": None, "loud_db": None}
         self.assertEqual(self.verdicts(me=broken, them=track())[0], "fail")
 
     def test_a_missing_track_key_is_treated_as_absent(self):
