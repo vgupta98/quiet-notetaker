@@ -397,6 +397,12 @@ so a line you said after ten quiet minutes is stamped when you said it, and not
 ten minutes early. `merge.py` interleaves the two tracks back into one
 conversation. Claude then fills in the template in `prompt.md`.
 
+Claude gets the meeting and nothing else. It runs with no tools, with none of
+the Claude settings or `CLAUDE.md` files on your Mac, and with no saved
+session. So a transcript cannot make it do anything, your notes read the same
+whatever folder you start `qn` from, and no second copy of the transcript is
+kept. `prompt.md` alone decides how the notes are written.
+
 ```
 them.m4a ─┐
           ├─ whisper ─→ merge ─→ transcript ─→ claude ─→ ~/Meetings/*.md
@@ -533,6 +539,7 @@ runs and for scripts:
 | `QN_MY_NAME` | `my_name` | the full name of your macOS account |
 | `QN_MODEL_DIR` | — | `~/.local/share/quiet-notetaker/models` |
 | `QN_MODEL` | — | `ggml-small.en.bin` in `QN_MODEL_DIR` |
+| `QN_CLAUDE_MODEL` | — | `opus` — the Claude model that writes the notes |
 | `QN_CONSENT` | — | unset — asks every time. Set to `full`/`local` to stop asking |
 | `QN_CONFIG` | — | `~/.config/quiet-notetaker/config` |
 

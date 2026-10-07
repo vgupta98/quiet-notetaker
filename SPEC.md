@@ -235,6 +235,28 @@ a calendar invite.
 A deleted person is recorded in `.people-removed` and never re-added. A person
 typed in by hand always survives, even one deleted before.
 
+## How Claude is called
+
+`qn` runs `claude -p` once for a `sharing: full` meeting. `prompt.md` is the
+system prompt. The message is the meeting block, the people block and the
+transcript, in that order, and nothing else.
+
+The call is closed on every side:
+
+| Flag | What it shuts out |
+|---|---|
+| `--tools ""` | every built-in tool |
+| `--strict-mcp-config` | every MCP server |
+| `--setting-sources ""` | the user's and the folder's settings, `CLAUDE.md` and rules |
+| `--no-session-persistence` | the copy of the transcript Claude Code would save |
+| `--model` | whatever model the user's own sessions are set to |
+
+The model is `opus`, or `QN_CLAUDE_MODEL`.
+
+A transcript is words other people said, so it must reach nothing but the
+note. Because no `CLAUDE.md` is read, `prompt.md` is the only place that says
+how the notes are written, the style of the sentences included.
+
 ## Retention
 
 Audio is over 99% of what the tool stores, at about 70 MB per hour. The note

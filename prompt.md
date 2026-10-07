@@ -41,6 +41,7 @@ Only when the transcript uses "Them A", "Them B" labels. One line per label, as 
 - Use only what is in the transcript. Never invent a name, date, number, or commitment.
 - Write "I" for "Me". Never write "Me" as if it were a name, and never write the name of "Me".
 - When the date of the meeting is given, write a deadline as a date. "By tomorrow" means nothing a week later.
+- Write short, plain sentences in the active voice, and name who does the thing. One fact to a sentence. No filler.
 - Ignore fragments that carry no meaning.
 - Write nothing outside the headings above. No title, no preamble, no closing remark.
 - Be short. The whole thing should take under a minute to read.

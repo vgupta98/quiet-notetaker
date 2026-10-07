@@ -290,6 +290,8 @@ cat > "$STUB/claude" <<'STUBEOF'
 if [ -n "${QN_CLAUDE_LOG:-}" ]; then printf 'claude called\n' >> "$QN_CLAUDE_LOG"; fi
 # QN_CLAUDE_INPUT keeps the prompt, so a test can prove what was sent.
 if [ -n "${QN_CLAUDE_INPUT:-}" ]; then cat > "$QN_CLAUDE_INPUT"; else cat >/dev/null; fi
+# QN_CLAUDE_ARGS keeps how it was called, one `<argument>` to a line.
+if [ -n "${QN_CLAUDE_ARGS:-}" ]; then printf '<%s>\n' "$@" > "$QN_CLAUDE_ARGS"; fi
 cat <<'BODY'
 ## Summary
 - A stubbed summary line.
@@ -521,7 +523,8 @@ PYEOF
   rm -f "$PROMPT_FILE"
   capture 60 "$TMPROOT/people-redo.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
     QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
-    QN_CLAUDE_INPUT="$PROMPT_FILE" QN_MY_NAME="Dana Reyes" \
+    QN_CLAUDE_INPUT="$PROMPT_FILE" QN_CLAUDE_ARGS="$TMPROOT/claude-args.txt" \
+    QN_MY_NAME="Dana Reyes" \
     /bin/bash "$QN" redo "$QN_NOTES_DIR/.recordings/$FULL_ID"
   assert_eq "0" "$CAPTURE_CODE" "qn redo exits 0 with a roster in place"
   assert_file "$PROMPT_FILE" "the prompt reached the claude stub"
@@ -535,6 +538,20 @@ PYEOF
   assert_contains "$(cat "$PROMPT_FILE")" 'Title: "roadmap review"' "the prompt names the meeting"
   assert_contains "$(cat "$PROMPT_FILE")" "Date: Wednesday 04 March 2026" "the prompt gives the day of the meeting"
   assert_contains "$(cat "$PROMPT_FILE")" '"Me" is: "Dana Reyes"' "the prompt says who Me is"
+
+  # A transcript is words other people said. Claude gets it with no tool to
+  # reach, none of this Mac's own Claude settings, and no saved copy.
+  claude_args="$(cat "$TMPROOT/claude-args.txt" 2>/dev/null)"
+  assert_contains "$claude_args" "<--tools>
+<>" "Claude is given no tools"
+  assert_contains "$claude_args" "<--strict-mcp-config>" "Claude is given no MCP servers"
+  assert_contains "$claude_args" "<--setting-sources>
+<>" "Claude reads no settings or CLAUDE.md from this Mac"
+  assert_contains "$claude_args" "<--no-session-persistence>" "Claude keeps no copy of the transcript"
+  assert_contains "$claude_args" "<--model>
+<opus>" "the model is named, not inherited"
+  assert_contains "$claude_args" "<You are writing meeting notes" "prompt.md is the system prompt"
+  assert_missing "$(cat "$PROMPT_FILE")" "You are writing meeting notes" "the instructions are not mixed into the transcript"
 
   # The roster must survive its own refresh. A note you wrote is not a fixture.
   capture 60 "$TMPROOT/people2.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \

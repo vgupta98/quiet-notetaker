@@ -88,6 +88,9 @@ MY_NAME="$(setting "${QN_MY_NAME:-}" my_name "$(id -F 2>/dev/null || true)")"
 RECORDER="${QN_RECORDER:-$HERE/build/recorder}"
 WATCHER="${QN_WATCHER:-$HERE/build/watcher}"
 PROMPT="$HERE/prompt.md"
+# Which Claude writes the notes. Named here, so the notes do not change with
+# the model your own Claude sessions are set to.
+CLAUDE_MODEL="${QN_CLAUDE_MODEL:-opus}"
 PLAY_WINDOW="$(setting "${QN_PLAY_WINDOW:-}" play_window 60)"
 MIC_SECONDS="${QN_MIC_SECONDS:-8}"
 CONSENT_WAIT="${QN_CONSENT_WAIT:-90}"
@@ -549,6 +552,22 @@ backup_note() {
   mv "$note.bak.new" "$note.bak"
 }
 
+# Claude reads the meeting on stdin and writes the notes, and can do nothing
+# else. A bare `claude -p` is a whole Claude Code session. Measured: it carried
+# 33,458 tokens of tools and instructions before the transcript, with Bash,
+# Edit and Write among the tools. It obeyed a CLAUDE.md in whatever folder the
+# watch was started from. It left a copy of every transcript in
+# ~/.claude/projects. A transcript is words other people said, so none of that
+# may stand.
+#
+# prompt.md is the system prompt, not part of the message: the instructions
+# and the transcript must not arrive as one text. `--bare` would do all of
+# this in one flag, but it refuses a login that is not an API key.
+write_notes() {
+  claude -p --model "$CLAUDE_MODEL" --system-prompt "$(cat "$PROMPT")" \
+    --tools "" --strict-mcp-config --setting-sources "" --no-session-persistence
+}
+
 # Everything that happens after a recording stops.
 process_recording() {
   local work="$1" title="$2" people="$3"
@@ -670,14 +689,13 @@ for w in json.load(sys.stdin)["warnings"]:
   if [ "$sharing" = "full" ]; then
     step "writing notes"
     if ! {
-          cat "$PROMPT"
-          printf '\n\n----- THIS MEETING -----\n\n%s\n' "$(meeting_header "$id" "$title")"
+          printf -- '----- THIS MEETING -----\n\n%s\n' "$(meeting_header "$id" "$title")"
           if [ -n "$who" ]; then
             printf '\n\n----- PEOPLE IN THIS MEETING -----\n\n%s\n' "$who"
           fi
           printf '\n\n----- TRANSCRIPT -----\n\n'
           cat "$work/transcript.txt"
-         } | claude -p > "$work/summary.md"; then
+         } | write_notes > "$work/summary.md"; then
       die "claude failed — the transcript is safe at $work/transcript.txt"
     fi
   else
