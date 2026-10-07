@@ -1132,6 +1132,19 @@ assert_contains "$guess_note" "B: Lena (guess)" "Claude's guess is recorded as a
 assert_contains "$guess_note" "A: Marco (confirmed)" "your answer outranks Claude's guess"
 assert_missing "$guess_note" "## Speakers" "the speakers section is lifted out of the note body"
 
+# A calendar often names a group and not its members. A voice you named is in
+# the room all the same. prompt.md keeps Claude to the people list, so the name
+# must be on it, or the notes say "Them" for a line that starts with "Marco:".
+printf 'Planning Team\n' > "$VOICE_WORK/attendees.txt"
+VOICE_PROMPT="$TMPROOT/voice-prompt.txt"
+capture 30 "$TMPROOT/voice-prompt.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$VOICE_DIR" \
+  QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
+  QN_CLAUDE_INPUT="$VOICE_PROMPT" /bin/bash "$QN" redo "2026-05-05-1100-planning"
+voice_people="$(sed -n '/PEOPLE IN THIS MEETING/,/TRANSCRIPT -----/p' "$VOICE_PROMPT")"
+assert_contains "$voice_people" "Marco" "a named voice is on the people list when the invite names a group"
+assert_contains "$voice_people" "Planning Team" "what the invite said is still on the list"
+assert_contains "$(cat "$voice_note")" 'attendees: ["Planning Team"]' "the note records only what the invite said"
+
 # --------------------------------------------------------------------------
 section "qn skip"
 # --------------------------------------------------------------------------

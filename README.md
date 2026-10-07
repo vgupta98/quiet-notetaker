@@ -201,7 +201,8 @@ in the notes, in what Claude is told, and in search:
 Without that claim the meeting reads `attendees: ["mciccone@example.com"]`,
 searching for Marco finds nothing, and every action item says "Them".
 
-- Only the attendees of *this* meeting are sent. Nobody else is named.
+- Only the attendees of *this* meeting are sent, and anyone whose voice you
+  named in it. Nobody else is named.
 - Only `sharing: full` meetings add a name, because the roster goes back to Claude.
 - Delete a line and that person never comes back. Add your own freely.
 

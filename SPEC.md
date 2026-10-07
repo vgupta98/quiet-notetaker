@@ -183,6 +183,12 @@ Two rules hold:
   `prompt.md` forbids a name that is not on that list, so an incomplete list
   would silently suppress a real name.
 
+  Every person whose voice is named in the transcript reaches the prompt too.
+  A calendar often lists a group and not its members, so the names on the
+  transcript lines were missing from the list, and Claude wrote "Them" for
+  people the transcript had already named. These names go to the prompt only.
+  The `attendees:` in the note still says what the calendar or `--with` said.
+
 A deleted person is recorded in `.people-removed` and never re-added. A person
 typed in by hand always survives, even one deleted before.
 

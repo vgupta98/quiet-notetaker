@@ -372,6 +372,19 @@ match_voices() {
     warn "voice matching failed — the transcript is unaffected"
 }
 
+# The people whose voices are named in this transcript, as "Marco, Lena". The
+# names are merge.py's, so this list and the transcript lines cannot disagree.
+voice_names() {
+  python3 - "$1" "$HERE/lib" <<'PYEOF'
+import pathlib, sys
+
+sys.path.insert(0, sys.argv[2])
+import merge
+
+print(", ".join(sorted(set(merge.names_for(pathlib.Path(sys.argv[1])).values()))))
+PYEOF
+}
+
 # Claude's guess at which letter is which person, and yours when you have said.
 # A guess is recorded as a guess. Only `qn confirm` writes (confirmed), because
 # only you were actually in the room.
@@ -591,12 +604,20 @@ for w in json.load(sys.stdin)["warnings"]:
     if [ -n "$resolved" ]; then shown="$resolved"; fi
   fi
 
+  # A voice you named is in the room, whatever the invite says. A calendar
+  # often lists a group and not its members, and prompt.md keeps Claude to
+  # this list, so a name the transcript already carried came out as "Them".
+  # They go first, because the block is cut off after a stated number.
+  local present="$people" voiced
+  voiced="$(voice_names "$work")"
+  if [ -n "$voiced" ]; then present="$voiced${people:+, $people}"; fi
+
   # The roster adds what you wrote about these people — "my manager", "owns
   # billing" — which is what lets Claude turn a "Them" line into a name.
-  local who="$people"
-  if [ -n "$people" ]; then
+  local who="$present"
+  if [ -n "$present" ]; then
     local enriched
-    enriched="$(python3 "$HERE/lib/people.py" "$NOTES_DIR" --context "$people" 2>/dev/null || true)"
+    enriched="$(python3 "$HERE/lib/people.py" "$NOTES_DIR" --context "$present" 2>/dev/null || true)"
     if [ -n "$enriched" ]; then who="$enriched"; fi
   fi
 

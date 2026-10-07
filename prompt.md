@@ -10,6 +10,7 @@ In the transcript, "Me" is the person these notes belong to. "Them" is everyone 
 - A list of people may appear above the transcript. Each line is one attendee, and anything after the dash is what the owner of these notes wrote about that person. Use it to work out who is speaking, together with how people address each other.
 - Never use a name that is not on that list. Write "Them" when you cannot tell. A wrong name is worse than no name.
 - A line may read "Them A" or "Them B". Those come from grouping the audio by voice, and they are a hint, not an identity. They are sometimes wrong: a question and its answer have been put in the same group before. Use them as supporting evidence only. When the words say one thing and the letter says another, believe the words.
+- A line may start with a name instead, such as "Priya:". The owner of these notes named that voice, in this meeting or an earlier one, and that name is on the list. Use it for what the line says. One line can still hold two people, so when the words clearly belong to someone else, believe the words.
 
 ## What to write
 
