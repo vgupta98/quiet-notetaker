@@ -83,6 +83,8 @@ export QN_MODEL_DIR="$MODEL_DIR"
 MODEL="${QN_MODEL:-$MODEL_DIR/ggml-small.en.bin}"
 VAD_MODEL="${QN_VAD_MODEL:-$MODEL_DIR/ggml-silero-v5.1.2.bin}"
 LANG_CODE="$(setting "${QN_LANG:-}" language en)"
+# Who "Me" is. The account's full name, unless the settings say otherwise.
+MY_NAME="$(setting "${QN_MY_NAME:-}" my_name "$(id -F 2>/dev/null || true)")"
 RECORDER="${QN_RECORDER:-$HERE/build/recorder}"
 WATCHER="${QN_WATCHER:-$HERE/build/watcher}"
 PROMPT="$HERE/prompt.md"
@@ -202,6 +204,25 @@ unique_id() {
 when_from_id() {
   date -j -f '%Y-%m-%d-%H%M' "$(printf '%s' "$1" | cut -d- -f1-4)" '+%d %b %Y, %H:%M' 2>/dev/null \
     || printf 'unknown time'
+}
+
+# The day a meeting happened, with its weekday, so that "by Friday" can become
+# a date. Empty when the id carries no date.
+day_from_id() {
+  date -j -f '%Y-%m-%d-%H%M' "$(printf '%s' "$1" | cut -d- -f1-4)" '+%A %d %B %Y' 2>/dev/null \
+    || true
+}
+
+# What the transcript cannot say about its own meeting. Without the day, a
+# deadline stays "by tomorrow". Without the name, nobody can tell that the
+# person the others talk to is the one the notes belong to. The title comes
+# from a calendar invite, so it is quoted the way the frontmatter quotes it.
+meeting_header() {
+  local id="$1" title="$2" day
+  printf 'Title: %s\n' "$(yaml_string "$title")"
+  day="$(day_from_id "$id")"
+  if [ -n "$day" ]; then printf 'Date: %s\n' "$day"; fi
+  if [ -n "$MY_NAME" ]; then printf '"Me" is: %s\n' "$(yaml_string "$MY_NAME")"; fi
 }
 
 # ------------------------------------------------------------------ consent
@@ -625,6 +646,7 @@ for w in json.load(sys.stdin)["warnings"]:
     step "writing notes"
     if ! {
           cat "$PROMPT"
+          printf '\n\n----- THIS MEETING -----\n\n%s\n' "$(meeting_header "$id" "$title")"
           if [ -n "$who" ]; then
             printf '\n\n----- PEOPLE IN THIS MEETING -----\n\n%s\n' "$who"
           fi

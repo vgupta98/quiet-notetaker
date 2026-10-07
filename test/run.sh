@@ -501,13 +501,20 @@ PYEOF
   rm -f "$PROMPT_FILE"
   capture 60 "$TMPROOT/people-redo.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \
     QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
-    QN_CLAUDE_INPUT="$PROMPT_FILE" \
+    QN_CLAUDE_INPUT="$PROMPT_FILE" QN_MY_NAME="Dana Reyes" \
     /bin/bash "$QN" redo "$QN_NOTES_DIR/.recordings/$FULL_ID"
   assert_eq "0" "$CAPTURE_CODE" "qn redo exits 0 with a roster in place"
   assert_file "$PROMPT_FILE" "the prompt reached the claude stub"
   assert_contains "$(cat "$PROMPT_FILE")" "PEOPLE IN THIS MEETING" "the prompt has the people block"
   assert_contains "$(cat "$PROMPT_FILE")" "my manager, owns billing" "what you wrote about Priya reaches Claude"
   assert_contains "$(cat "$PROMPT_FILE")" "Arjun" "an attendee with no roster note is still listed"
+
+  # The transcript cannot say what day it was, or which name in the room is
+  # "Me". Without them a deadline stays "by tomorrow" and the owner of the
+  # notes is written up as one more attendee.
+  assert_contains "$(cat "$PROMPT_FILE")" 'Title: "roadmap review"' "the prompt names the meeting"
+  assert_contains "$(cat "$PROMPT_FILE")" "Date: Wednesday 04 March 2026" "the prompt gives the day of the meeting"
+  assert_contains "$(cat "$PROMPT_FILE")" '"Me" is: "Dana Reyes"' "the prompt says who Me is"
 
   # The roster must survive its own refresh. A note you wrote is not a fixture.
   capture 60 "$TMPROOT/people2.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$QN_NOTES_DIR" \

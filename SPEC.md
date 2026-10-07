@@ -189,6 +189,22 @@ Two rules hold:
   people the transcript had already named. These names go to the prompt only.
   The `attendees:` in the note still says what the calendar or `--with` said.
 
+Above the people and the transcript, `qn` sends what the transcript cannot say
+about its own meeting:
+
+```
+Title: "sdk sync"
+Date: Thursday 20 August 2026
+"Me" is: "Dana Reyes"
+```
+
+The date is read from the meeting id, and is left out when the id carries none.
+The name is the `my_name` setting, and is left out when that is empty. Without
+the date a deadline stays "by tomorrow". Without the name, nobody can tell that
+the person the others talk to is the one the notes belong to. The title and the
+name are quoted the way the frontmatter quotes them, because a title comes from
+a calendar invite.
+
 A deleted person is recorded in `.people-removed` and never re-added. A person
 typed in by hand always survives, even one deleted before.
 
@@ -448,6 +464,7 @@ the developer's own.
 | `diarize` | `QN_DIARIZE` | `no` |
 | `language` | `QN_LANG` | `en` |
 | `play_window` | `QN_PLAY_WINDOW` | `60` |
+| `my_name` | `QN_MY_NAME` | the full name of the macOS account |
 
 Precedence is environment, then file, then default, everywhere including the
 MCP server. Claude starts the server itself, so the server never sees the

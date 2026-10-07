@@ -209,6 +209,11 @@ searching for Marco finds nothing, and every action item says "Them".
 Names are never guessed from audio. They come from `--with` or from your
 calendar, so a person typed them.
 
+Claude is also told the title of the meeting, its date, and your name. The date
+turns "by Friday" into a date. Your name tells Claude that the person the
+others talk to is you. It is the full name of your macOS account, unless you
+set `my_name` in your settings file.
+
 ### Grouping the other voices (optional)
 
 `Them` is a mixdown of everyone else, so it is one label for a whole room. You
@@ -521,6 +526,7 @@ runs and for scripts:
 | `QN_DIARIZE` | `diarize` | `no` |
 | `QN_LANG` | `language` | `en` |
 | `QN_PLAY_WINDOW` | `play_window` | `60` |
+| `QN_MY_NAME` | `my_name` | the full name of your macOS account |
 | `QN_MODEL_DIR` | — | `~/.local/share/quiet-notetaker/models` |
 | `QN_MODEL` | — | `ggml-small.en.bin` in `QN_MODEL_DIR` |
 | `QN_CONSENT` | — | unset — asks every time. Set to `full`/`local` to stop asking |
