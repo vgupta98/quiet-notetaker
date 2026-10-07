@@ -391,8 +391,11 @@ The microphone track is levelled first. Your voice moves around; the meeting
 app's audio does not. That one filter makes a large difference to the mic
 transcript, and it makes the system track worse, so it runs on the mic only.
 
-Whisper turns each track into text on your Mac. `merge.py` interleaves them
-back into one conversation. Claude then fills in the template in `prompt.md`.
+Whisper turns each track into text on your Mac. A voice detector first finds
+where the talking is. Each stretch of talking is cut out and transcribed alone,
+so a line you said after ten quiet minutes is stamped when you said it, and not
+ten minutes early. `merge.py` interleaves the two tracks back into one
+conversation. Claude then fills in the template in `prompt.md`.
 
 ```
 them.m4a ─┐
@@ -415,6 +418,7 @@ mishearings in the notes above it, so a wrong correction is always checkable.
 | `recorder/watcher.swift` | Detects meetings starting and ending |
 | `lib/health.py` | Decides whether a recording is usable |
 | `lib/merge.py` | Interleaves the two transcripts by timestamp |
+| `lib/stretches.py` | Cuts a track into stretches of talking, so each line keeps its own time |
 | `lib/vocab.py` | Learns your meetings' words and primes whisper with them |
 | `lib/people.py` | Keeps the roster of who you meet, and what you wrote about them |
 | `lib/names.py` | Reads a person out of a calendar invite's email address |

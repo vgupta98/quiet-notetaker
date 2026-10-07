@@ -313,11 +313,22 @@ cat > "$STUB/whisper-cli" <<'STUBEOF'
 # prove it, exactly the way QN_CLAUDE_LOG does for claude.
 if [ -n "${QN_WHISPER_LOG:-}" ]; then printf 'whisper called\n' >> "$QN_WHISPER_LOG"; fi
 of=""
-while [ $# -gt 0 ]; do
-  if [ "$1" = "-of" ]; then of="$2"; fi
-  shift
+heard='{"transcription":[{"offsets":{"from":0,"to":2000},"text":" stub line"}]}'
+for arg in "$@"; do
+  if [ "$of" = "next" ]; then of="$arg"; elif [ "$arg" = "-of" ]; then of="next"; fi
 done
-printf '{"transcription":[{"offsets":{"from":0,"to":2000},"text":" stub line"}]}\n' > "$of.json"
+if [ -n "$of" ]; then printf '%s\n' "$heard" > "$of.json"; exit 0; fi
+# Given no -of, whisper writes its answer beside each file it was handed.
+for arg in "$@"; do
+  case "$arg" in *.wav) printf '%s\n' "$heard" > "$arg.json" ;; esac
+done
+STUBEOF
+# The voice detector, saying it heard talking early on and again a minute in.
+cat > "$STUB/whisper-vad-speech-segments" <<'STUBEOF'
+#!/bin/bash
+printf 'Detected 2 speech segments:\n'
+printf 'Speech segment 0: start = 100.00, end = 300.00\n'
+printf 'Speech segment 1: start = 6000.00, end = 6300.00\n'
 STUBEOF
 cat > "$STUB/ffmpeg" <<'STUBEOF'
 #!/bin/bash
@@ -327,9 +338,18 @@ cat > "$STUB/ffmpeg" <<'STUBEOF'
 out=""
 for a in "$@"; do out="$a"; done
 if [ "$out" = "-" ]; then exit 0; fi
-: > "$out"
+# A wav has to be a real one, because lib/stretches.py cuts it. Seventy seconds
+# of silence is long enough for the two stretches the detector stub reports.
+case "$out" in
+  *.wav) python3 -c '
+import sys, wave
+with wave.open(sys.argv[1], "wb") as handle:
+    handle.setnchannels(1); handle.setsampwidth(2); handle.setframerate(16000)
+    handle.writeframes(bytes(2 * 16000 * 70))' "$out" ;;
+  *) : > "$out" ;;
+esac
 STUBEOF
-chmod +x "$STUB/claude" "$STUB/whisper-cli" "$STUB/ffmpeg"
+chmod +x "$STUB/claude" "$STUB/whisper-cli" "$STUB/ffmpeg" "$STUB/whisper-vad-speech-segments"
 : > "$TMPROOT/model.bin"
 
 # 1. Missing dependencies must fail with a message that names the tool.
@@ -1038,6 +1058,31 @@ if [ -e "$SILENT_DIR/$SILENT_ID.md" ]; then
 else
   pass "no note is written for a recording that captured nothing"
 fi
+
+# --------------------------------------------------------------------------
+section "a line said after a long silence"
+# --------------------------------------------------------------------------
+# whisper used to take the silences out itself, and a sentence said after ten
+# quiet minutes was stamped where the sentence before them had ended. Each
+# stretch of talking is now cut out and heard alone. The detector stub hears
+# talking at one second and again at one minute, so the second line must say
+# [01:00], and not [00:03].
+guard_notes_dir
+
+GAP_DIR="$TMPROOT/gap"
+GAP_WORK="$GAP_DIR/.recordings/2026-05-07-1100-review"
+mkdir -p "$GAP_WORK"
+printf 'local\n' > "$GAP_WORK/consent"
+printf 'audio' > "$GAP_WORK/me.m4a"
+: > "$TMPROOT/vad.bin"
+capture 60 "$TMPROOT/gap.out" env PATH="$STUB:$PATH" QN_NOTES_DIR="$GAP_DIR" \
+  QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/vad.bin" \
+  /bin/bash "$QN" redo "2026-05-07-1100-review"
+assert_eq "0" "$CAPTURE_CODE" "qn redo exits 0 with the voice detector in place"
+gap_text="$(cat "$GAP_WORK/transcript.txt" 2>/dev/null)"
+assert_contains "$gap_text" "[00:01] Me: stub line" "the first line starts where the talking did"
+assert_contains "$gap_text" "[01:00] Me: stub line" "a line after a long silence keeps its own time"
+assert_eq "" "$(find "$GAP_WORK" -name '*.wav' -o -name '*.parts')" "no cut audio is left behind"
 
 # --------------------------------------------------------------------------
 section "voice hints and qn confirm"

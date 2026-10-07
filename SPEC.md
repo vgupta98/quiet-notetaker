@@ -112,6 +112,33 @@ the block early and drop `sharing:` into the body.
 
 Minutes may exceed 59 (`[104:12]`). Speaker is exactly `Me` or `Them`.
 
+## Where a line's time comes from
+
+A voice detector finds the speech in each track. `lib/stretches.py` joins
+speech that is less than `GAP_MS` apart into one stretch, and writes each
+stretch as a file of its own. whisper transcribes them one by one. `them.json`
+and `me.json` hold every segment on the track's own clock: the time whisper
+gave it inside its stretch, plus the time the stretch began. So a line cannot
+land outside the stretch it was said in.
+
+whisper can remove the silences itself, with `--vad`. It then joins a sentence
+said after a long silence to the one before it, and the joined line starts
+where the earlier sentence ended. Measured on six real tracks: 86 of 1,395
+lines sat more than ten seconds from where they were said, and the worst sat
+581 seconds early. With the stretches, 1 of 1,763 did.
+
+A stretch shorter than `MIN_ALONE_MS` with nothing near it is not transcribed.
+whisper invents words for a blip that short.
+
+The cut files live in `<track>.parts` beside the audio while whisper runs, and
+are removed when it ends, whether it worked or not.
+
+Without the detector model, whisper hears each track whole.
+
+The vocabulary prompt ends with a full stop. whisper reads a prompt as what
+was said just before, so a list that stops on a comma is a sentence it goes on
+with, at the start of every stretch.
+
 ## CLI surface
 
 ```
@@ -248,7 +275,7 @@ and every capped reply reports the real `total` beside `shown`.
 ```
 qn                the command, and the only entry point
 prompt.md         the note template
-lib/              health.py, merge.py, vocab.py, people.py
+lib/              health.py, merge.py, vocab.py, people.py, stretches.py
 mcp/              index.py, server.py
 recorder/         main.swift, watcher.swift, and their plists
 test/             every test_*.py, plus run.sh and the fixtures

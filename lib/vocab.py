@@ -297,8 +297,14 @@ def _write(directory: str, terms: list[str]) -> None:
 
 
 def as_prompt(terms: list[str]) -> str:
-    """The string handed to whisper's --prompt."""
-    return ", ".join(terms)
+    """The string handed to whisper's --prompt.
+
+    It ends with a full stop. whisper reads the prompt as what was said just
+    before, so a list that stops on a comma is a sentence to go on with. Each
+    stretch of talking then opened with "and updated." in place of what was
+    said. Measured on two real tracks: 8% fewer words without the full stop.
+    """
+    return ", ".join(terms) + "." if terms else ""
 
 
 if __name__ == "__main__":

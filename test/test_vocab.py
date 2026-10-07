@@ -173,7 +173,9 @@ class RefreshOnDisk(unittest.TestCase):
         self.assertNotIn("Arjun", vocab.refresh(self.dir))
 
     def test_prompt_is_a_plain_comma_list(self):
-        self.assertEqual(vocab.as_prompt(["on-call", "Braze"]), "on-call, Braze")
+        # The full stop matters: without it whisper goes on with the list.
+        self.assertEqual(vocab.as_prompt(["on-call", "Braze"]), "on-call, Braze.")
+        self.assertEqual(vocab.as_prompt([]), "")
 
 
 

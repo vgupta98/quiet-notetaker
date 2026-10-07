@@ -342,11 +342,6 @@ transcribe_track() {
   ffmpeg -nostdin -v error -y -i "$src" ${level[@]+"${level[@]}"} \
     -ac 1 -ar 16000 -c:a pcm_s16le "$base.wav"
 
-  local vad=()
-  if [ -f "$VAD_MODEL" ]; then
-    vad=(--vad -vm "$VAD_MODEL")
-  fi
-
   # Words this Mac has learned your meetings use. --carry-initial-prompt keeps
   # them in play past the first window, which is where long meetings drift.
   local prime=()
@@ -356,12 +351,41 @@ transcribe_track() {
     prime=(--prompt "$words" --carry-initial-prompt)
   fi
 
-  if ! whisper-cli -m "$MODEL" -f "$base.wav" -oj -of "$base" -np -l "$LANG_CODE" \
-       ${vad[@]+"${vad[@]}"} ${prime[@]+"${prime[@]}"} >/dev/null 2>"$log"; then
-    cat "$log" >&2
-    die "whisper failed on the $track track"
+  # Without the voice detector, whisper hears the whole track in one piece.
+  if [ ! -f "$VAD_MODEL" ]; then
+    if ! whisper-cli -m "$MODEL" -f "$base.wav" -oj -of "$base" -np -l "$LANG_CODE" \
+         ${prime[@]+"${prime[@]}"} >/dev/null 2>"$log"; then
+      cat "$log" >&2
+      die "whisper failed on the $track track"
+    fi
+    rm -f "$base.wav" "$log"
+    return 0
   fi
-  rm -f "$base.wav" "$log"
+
+  # With it, each stretch of talking is cut out and heard alone, so a line
+  # cannot land in the transcript before it was said. lib/stretches.py says
+  # why whisper is not left to remove the silences itself.
+  need whisper-vad-speech-segments "brew upgrade whisper-cpp"
+  local parts="$base.parts"
+  rm -rf "$parts"
+  mkdir -p "$parts"
+  if ! whisper-vad-speech-segments -f "$base.wav" -vm "$VAD_MODEL" -np 2>"$log" \
+       | python3 "$HERE/lib/stretches.py" cut "$base.wav" "$parts"; then
+    cat "$log" >&2
+    rm -rf "$parts"
+    die "could not find the speech on the $track track"
+  fi
+  # A track where nobody spoke has no stretches, and whisper needs a file.
+  if [ -n "$(find "$parts" -name '*.wav' -print -quit)" ]; then
+    if ! whisper-cli -m "$MODEL" -oj -np -l "$LANG_CODE" ${prime[@]+"${prime[@]}"} \
+         "$parts"/*.wav >/dev/null 2>"$log"; then
+      cat "$log" >&2
+      rm -rf "$parts"
+      die "whisper failed on the $track track"
+    fi
+  fi
+  python3 "$HERE/lib/stretches.py" join "$parts" > "$base.json"
+  rm -rf "$parts" "$base.wav" "$log"
 }
 
 # `--notes-only` reuses what whisper wrote last time. A track that has audio
@@ -544,7 +568,8 @@ process_recording() {
   fi
 
   local helper
-  for helper in lib/health.py lib/merge.py lib/vocab.py lib/people.py lib/voices.py; do
+  for helper in lib/health.py lib/merge.py lib/vocab.py lib/people.py lib/voices.py \
+                lib/stretches.py; do
     if [ ! -f "$HERE/$helper" ]; then
       die "$HERE/$helper is missing — the audio is safe in $work"
     fi
@@ -1500,6 +1525,7 @@ cmd_doctor() {
   }
   check "ffmpeg"          "command -v ffmpeg"      "brew install ffmpeg"
   check "whisper-cli"     "command -v whisper-cli" "brew install whisper-cpp"
+  check "speech finder"   "command -v whisper-vad-speech-segments" "brew upgrade whisper-cpp"
   check "claude"          "command -v claude"      "install the Claude CLI"
   check "speech model"    "[ -f '$MODEL' ]"        "qn setup"
   check "voice detector"  "[ -f '$VAD_MODEL' ]"    "qn setup"
