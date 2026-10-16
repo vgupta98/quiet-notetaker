@@ -13,6 +13,8 @@ Everything in this repo agrees on the shapes below. Change them here first.
       them.m4a  me.m4a  them.json  me.json  transcript.txt  summary.md
       consent                              one word: full | local | none
       consent.answered                     present once a human has answered
+  .recordings/.joined/<id>/                a half that `qn join` replaced, with
+                                           its note. Move it back to undo.
   .index.db                                disposable. rebuilt by rescanning.
 ```
 
@@ -145,6 +147,7 @@ with, at the start of every stretch.
 qn record [title...]            record until Ctrl-C, then process
 qn redo <id|dir>                rebuild notes from an existing recording
 qn --notes-only redo <id>       rebuild the notes, reusing the transcript
+qn join <id> <id> [title...]    make one meeting of a call recorded in two halves
 qn play <id> [MM:SS]            play the audio from a timestamp
 qn approve <id>                 send a held (local) meeting to Claude
 qn pending                      list meetings that have no notes yet
@@ -174,6 +177,38 @@ seconds rather than a second pass over the audio. It refuses a recording that
 has audio but no words yet, because dropping a speaker's whole side would look
 like a meeting where nobody spoke. It is refused on a new recording, where
 there is nothing to reuse.
+
+## Joining a call that dropped
+
+`qn join` makes one meeting of two recordings of the same call. The order of
+the ids does not matter: the earlier one comes first. Without a title, the
+joined meeting keeps the first half's title. Its id takes the first half's
+time.
+
+- Each track is joined in the recorder's format. Each half is padded with
+  silence to its longer track first, so a short or missing track cannot move
+  the second half out of step.
+- `attendees.txt` holds everyone from both halves, each once.
+- `consent` is `full` only when both halves are `full` and `--local` was not
+  given. Otherwise it is `local`. `consent.answered` is written only when both
+  halves have one. `--with` replaces the attendees, as it does for `redo`.
+- The joined meeting is transcribed, grouped and written up again from the
+  start, as `qn redo` does. Voice letters belong to one recording, so the
+  halves' `confirmed.txt`, `matched.txt` and `skipped.txt` are not carried
+  over. The roster names known voices again.
+- The halves and their notes move to `.recordings/.joined/<id>/`. When that
+  folder exists, from an earlier join of the same call, the half gets a
+  `-2` suffix there. Deleting the joined meeting and moving the halves back
+  undoes the join.
+- A join holds `.recordings/.processing` from start to end, the lock a watch
+  write-up holds. It waits while a watch writes up a meeting.
+
+It refuses the recording in progress, a half with no note yet (a watch writes
+the note last), a half you refused to record, a half whose audio was pruned,
+a half with no audio, and the same meeting twice. It checks for whisper, the
+speech model and, for a `full` join, Claude before it moves anything. A
+refusal changes nothing. `--notes-only` is refused, because a join has to
+hear the audio again.
 
 ## The roster
 
@@ -264,6 +299,8 @@ already holds the full transcript, so `qn prune` deletes `them.m4a` and
 `me.m4a` and nothing else.
 
 The recording in progress, named by `.recordings/.recording`, is never pruned.
+
+The halves in `.recordings/.joined/` are pruned by the same rules.
 
 A meeting whose consent is not `full` is kept unless you say otherwise. `qn
 prune` counts the held meetings whose audio is old enough, names the number,
