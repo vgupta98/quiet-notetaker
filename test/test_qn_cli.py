@@ -199,6 +199,12 @@ class Dispatch(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("usage", done.stderr)
 
+    def test_join_with_one_meeting_explains_itself(self):
+        done = run_qn("join", "2026-05-05-1000-sdk-standup")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("usage", done.stderr)
+        self.assertNotIn("id=", done.stdout)
+
     def test_with_flag_requires_a_value(self):
         done = run_qn("--with")
         self.assertNotEqual(done.returncode, 0)
