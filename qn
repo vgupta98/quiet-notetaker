@@ -7,6 +7,7 @@
 #   qn stop                           end the recording, keep watching
 #   qn redo <id>                      rebuild notes from a recording
 #   qn --notes-only redo <id>         rebuild notes, reuse the words
+#   qn join <id> <id> [title...]      make one meeting of a call that dropped
 #   qn approve <id>                   send a held meeting to Claude
 #   qn pending                        list meetings awaiting approval
 #   qn play <id> [MM:SS]              hear what was actually said
@@ -74,6 +75,9 @@ else
 fi
 
 REC_DIR="$NOTES_DIR/.recordings"
+# The halves of a joined meeting, kept so a join can be undone by moving them
+# back. Hidden, so nothing that walks the recordings counts them twice.
+JOINED_DIR="$REC_DIR/.joined"
 # The models are 600 MB and never change, so they live outside the checkout.
 # Inside it, a `brew upgrade` would delete them with the old version folder,
 # and a second clone would download every byte again. `qn setup` puts them
@@ -939,6 +943,122 @@ cmd_approve() {
   cmd_redo "$work"
 }
 
+# How long a recording runs, in seconds: its longer track.
+recording_seconds() {
+  local work="$1" track length longest=0
+  for track in them me; do
+    [ -s "$work/$track.m4a" ] || continue
+    length="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$work/$track.m4a")" \
+      || return 1
+    longest="$(printf '%s %s\n' "$longest" "$length" | awk '{ print ($2 > $1) ? $2 : $1 }')"
+  done
+  printf '%s' "$longest"
+}
+
+# One track of a joined meeting, in the recorder's own format. Each half is
+# padded to its own length first: a track that ended early, or was never
+# captured, would otherwise pull that whole side of the second half out of
+# step with the other.
+join_track() {
+  local first="$1" second="$2" track="$3" out="$4"
+  if [ ! -s "$first/$track.m4a" ] && [ ! -s "$second/$track.m4a" ]; then return 0; fi
+  local inputs=() filters="" half length index=0
+  for half in "$first" "$second"; do
+    length="$(recording_seconds "$half")" || return 1
+    if [ -s "$half/$track.m4a" ]; then
+      inputs+=(-i "$half/$track.m4a")
+    else
+      inputs+=(-f lavfi -t "$length" -i "anullsrc=r=48000:cl=stereo")
+    fi
+    filters="$filters[$index:a]aformat=sample_rates=48000:channel_layouts=stereo,apad=whole_dur=$length[a$index];"
+    index=$((index + 1))
+  done
+  ffmpeg -nostdin -v error -y "${inputs[@]}" \
+    -filter_complex "${filters}[a0][a1]concat=n=2:v=0:a=1" \
+    -c:a aac -b:a 96k "$out/$track.m4a"
+}
+
+# A call that dropped and was dialled again is one meeting in two recordings.
+# The joined audio is heard again from the start, because a voice letter
+# belongs to one recording: the same person can be A in one half and B in
+# the other, and only grouping the whole call gives them one letter.
+cmd_join() {
+  [ "$NOTES_ONLY" = "no" ] || die "--notes-only cannot join — a join has to hear the audio again"
+  local first second
+  first="$(resolve_recording "$1")"
+  second="$(resolve_recording "$2")"
+  first="$REC_DIR/$(basename "$first")"
+  second="$REC_DIR/$(basename "$second")"
+  [ "$first" != "$second" ] || die "give two different meetings to join"
+  # An id starts with its time, so sorting the ids puts the halves in order.
+  if [[ "$(basename "$second")" < "$(basename "$first")" ]]; then
+    local earlier="$second"
+    second="$first"
+    first="$earlier"
+  fi
+  local title="${3:-$(title_from_id "$(basename "$first")")}"
+
+  local active="" half id
+  if [ -s "$REC_DIR/.recording" ]; then active="$(cat "$REC_DIR/.recording")"; fi
+  for half in "$first" "$second"; do
+    id="$(basename "$half")"
+    [ -d "$half" ] || die "no recording called '$id' — look in $REC_DIR"
+    [ "$half" != "$active" ] || die "$id is still recording"
+    [ ! -f "$half/.pruned" ] || die "the audio for $id was pruned, so there is nothing to join"
+    if [ ! -s "$half/them.m4a" ] && [ ! -s "$half/me.m4a" ]; then
+      die "$id has no audio to join"
+    fi
+    [ ! -e "$JOINED_DIR/$id" ] || die "$JOINED_DIR already holds $id"
+  done
+
+  # Built beside the halves and moved into place last, so a failure here
+  # changes nothing.
+  local staging="$REC_DIR/.joining-$$" track
+  rm -rf "$staging"
+  mkdir -p "$staging"
+  for track in them me; do
+    if ! join_track "$first" "$second" "$track" "$staging"; then
+      rm -rf "$staging"
+      die "ffmpeg could not join the $track tracks — nothing was changed"
+    fi
+  done
+
+  local people
+  people="$(cat "$first/attendees.txt" "$second/attendees.txt" 2>/dev/null | tr ',' '\n' \
+              | sed 's/^ *//; s/ *$//' | awk 'NF && !seen[tolower($0)]++' \
+              | paste -sd ',' - | sed 's/,/, /g' || true)"
+  if [ -n "$people" ]; then printf '%s\n' "$people" > "$staging/attendees.txt"; fi
+
+  # Rule 1: the joined meeting is no more shareable than its more private half.
+  if [ "$(read_consent "$first")" = "full" ] && [ "$(read_consent "$second")" = "full" ]; then
+    printf 'full\n' > "$staging/consent"
+  else
+    printf 'local\n' > "$staging/consent"
+  fi
+  if [ -e "$first/consent.answered" ] && [ -e "$second/consent.answered" ]; then
+    : > "$staging/consent.answered"
+  fi
+
+  mkdir -p "$JOINED_DIR"
+  local note
+  for half in "$first" "$second"; do
+    id="$(basename "$half")"
+    mv "$half" "$JOINED_DIR/$id"
+    for note in "$NOTES_DIR/$id.md" "$NOTES_DIR/$id.md.bak"; do
+      if [ -e "$note" ]; then mv "$note" "$JOINED_DIR/$id/"; fi
+    done
+  done
+
+  local slug work
+  slug="$(slugify "$title")"
+  if [ -z "$slug" ]; then slug="meeting"; fi
+  id="$(unique_id "$(basename "$first" | cut -d- -f1-4)-$slug")"
+  work="$REC_DIR/$id"
+  mv "$staging" "$work"
+  step "joined into $id — the halves are kept in $JOINED_DIR"
+  process_recording "$work" "$(title_from_id "$id")" "$people"
+}
+
 # Recordings that never became a note at all, newest last, one id per line.
 #
 # A held meeting still gets its note, with `sharing: local` and no summary, so
@@ -1139,7 +1259,7 @@ cmd_prune() {
   # a number. An automatic run never asks, so it never includes them.
   local at_stake=0 take_held=no
   if [ "$mode" = "manual" ] && [ -z "${QN_DRY_RUN:-}" ]; then
-    for dir in "$REC_DIR"/*/; do
+    for dir in "$REC_DIR"/*/ "$JOINED_DIR"/*/; do
       if [ ! -d "$dir" ]; then continue; fi
       work="${dir%/}"
       if [ "$work" = "$active" ]; then continue; fi
@@ -1151,7 +1271,8 @@ cmd_prune() {
     fi
   fi
 
-  for dir in "$REC_DIR"/*/; do
+  # The halves of a joined meeting hold audio too, and age like any other.
+  for dir in "$REC_DIR"/*/ "$JOINED_DIR"/*/; do
     if [ ! -d "$dir" ]; then continue; fi
     work="${dir%/}"
 
@@ -1676,6 +1797,8 @@ case "${1:-}:$#" in
     esac
     ;;
   redo:2)           cmd_redo "$2" "$attendees"; exit $? ;;
+  join:1|join:2)    die "usage: qn join <id> <id> [title...]" ;;
+  join:*)           cmd_join "$2" "$3" "${*:4}"; exit $? ;;
   approve:2)        cmd_approve "$2"; exit $? ;;
   play:2)           cmd_play "$2" "00:00"; exit $? ;;
   play:3)

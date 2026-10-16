@@ -264,15 +264,15 @@ guard_notes_dir
 # A subcommand is only probed by reading the source. Running an unknown
 # subcommand would fall through to the record path and start a real recording.
 # The dispatch may match on the verb alone (`redo)`) or on the verb and the
-# argument count (`redo:2)`). Both count as present.
+# argument count (`redo:2)`, or `join:*)` for any count). All count as present.
 qn_has() {
-  grep -Eq "^[[:space:]]*\"?$1\"?(:[0-9]+)?\)" "$QN" && return 0
+  grep -Eq "^[[:space:]]*\"?$1\"?(:([0-9]+|\*))?\)" "$QN" && return 0
   grep -Eq "(=|\|)[[:space:]]*\"$1\"" "$QN"
 }
 
 # SPEC.md, "CLI surface". Every one of these must exist. A rename is a broken
 # contract, so it fails here instead of quietly skipping the tests below.
-for sub in redo play index pending approve vocab people prune confirm skip setup doctor; do
+for sub in redo join play index pending approve vocab people prune confirm skip setup doctor; do
   if qn_has "$sub"; then
     pass "qn has the $sub subcommand"
   else
@@ -717,6 +717,122 @@ else
   pass "--notes-only refuses a half-transcribed recording"
 fi
 assert_contains "$(cat "$TMPROOT/reuse-half.out")" "me track" "the refusal names the track that is missing"
+
+# --------------------------------------------------------------------------
+section "joining a call that dropped"
+# --------------------------------------------------------------------------
+# One call recorded in two halves becomes one meeting, as if it never split.
+guard_notes_dir
+
+JOIN_DIR="$TMPROOT/join"
+JOIN_REC="$JOIN_DIR/.recordings"
+JOIN_CLAUDE_LOG="$TMPROOT/join-claude.log"
+# The ffmpeg stub writes empty files, and a join is only proved by real audio.
+JOIN_STUB="$TMPROOT/join-stubbin"
+mkdir -p "$JOIN_STUB"
+cp "$STUB/claude" "$STUB/whisper-cli" "$JOIN_STUB/"
+
+join_qn() { # join_qn <outfile> <args...>
+  local out="$1"; shift
+  rm -f "$JOIN_CLAUDE_LOG"
+  capture 120 "$out" env PATH="$JOIN_STUB:$PATH" QN_NOTES_DIR="$JOIN_DIR" \
+    QN_CLAUDE_LOG="$JOIN_CLAUDE_LOG" \
+    QN_MODEL="$TMPROOT/model.bin" QN_VAD_MODEL="$TMPROOT/no-vad.bin" \
+    /bin/bash "$QN" "$@"
+}
+
+# make_half <id> <seconds> <consent> <attendees> [make_audio flags...]
+make_half() {
+  local id="$1" seconds="$2" consent="$3" people="$4"; shift 4
+  "$HERE/make_audio.sh" "$JOIN_REC/$id" --seconds "$seconds" "$@" >/dev/null 2>&1
+  printf '%s\n' "$consent" > "$JOIN_REC/$id/consent"
+  printf '%s\n' "$people" > "$JOIN_REC/$id/attendees.txt"
+  printf -- '---\ntitle: "%s"\nsharing: %s\n---\n' "$id" "$consent" > "$JOIN_DIR/$id.md"
+}
+
+seconds_of() {
+  ffprobe -v error -show_entries format=duration -of csv=p=0 "$1" 2>/dev/null | cut -d. -f1
+}
+
+if ! command -v say >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  skip "qn join" "say or ffprobe is missing"
+else
+  mkdir -p "$JOIN_REC"
+  FIRST="2026-05-05-1000-sdk-standup"
+  SECOND="2026-05-05-1040-design-review"
+  make_half "$FIRST" 6 full "Priya"
+  make_half "$SECOND" 4 full "priya, Arjun"
+
+  # Given newest first, to prove the halves are put in order.
+  join_qn "$TMPROOT/join.out" join "$SECOND" "$FIRST" design review
+  assert_eq "0" "$CAPTURE_CODE" "qn join exits 0"
+  JOINED_ID="2026-05-05-1000-design-review"
+  JOINED_WORK="$JOIN_REC/$JOINED_ID"
+  assert_file "$JOIN_DIR/$JOINED_ID.md" "the joined meeting gets one note, at the first half's time"
+  assert_eq "10" "$(seconds_of "$JOINED_WORK/them.m4a")" "the joined them track is both halves long"
+  assert_eq "10" "$(seconds_of "$JOINED_WORK/me.m4a")" "the joined me track is both halves long"
+  joined_text="$(cat "$JOIN_DIR/$JOINED_ID.md")"
+  assert_contains "$joined_text" "title: \"design review\"" "the joined note carries the new title"
+  assert_contains "$joined_text" "attendees: [\"Priya\", \"Arjun\"]" "everyone from both halves is listed once"
+  assert_contains "$joined_text" "sharing: full" "two full halves make a full meeting"
+  assert_file "$JOIN_CLAUDE_LOG" "a full joined meeting is written up by claude"
+  for half in "$FIRST" "$SECOND"; do
+    if [ -e "$JOIN_REC/$half" ] || [ -e "$JOIN_DIR/$half.md" ]; then
+      fail "the $half half leaves the meetings" "it is still in $JOIN_DIR"
+    else
+      pass "the $half half leaves the meetings"
+    fi
+    assert_file "$JOIN_REC/.joined/$half/them.m4a" "the $half half keeps its audio in .joined"
+    assert_file "$JOIN_REC/.joined/$half/$half.md" "the $half half keeps its note in .joined"
+  done
+
+  # A local half holds the whole meeting back, and nothing reaches Claude.
+  # The first half has no them track, so the padding has to keep the second
+  # half's them lines at their real time.
+  make_half "2026-05-06-0900-held" 6 local "Priya" --missing-them
+  make_half "2026-05-06-0930-shared" 4 full "Priya"
+  join_qn "$TMPROOT/join-held.out" join "2026-05-06-0900-held" "2026-05-06-0930-shared"
+  assert_eq "0" "$CAPTURE_CODE" "qn join of a held half exits 0"
+  assert_contains "$(cat "$JOIN_DIR/2026-05-06-0900-held.md")" "sharing: local" \
+    "a held half keeps the joined meeting held"
+  if [ -e "$JOIN_CLAUDE_LOG" ]; then
+    fail "a held joined meeting never reaches claude" "the stub was called"
+  else
+    pass "a held joined meeting never reaches claude"
+  fi
+  assert_eq "10" "$(seconds_of "$JOIN_REC/2026-05-06-0900-held/them.m4a")" \
+    "a missing track is padded with silence for its half"
+
+  # Refusals change nothing.
+  make_half "2026-05-07-0900-one" 4 full "Priya"
+  make_half "2026-05-07-0930-two" 4 full "Priya"
+  join_qn "$TMPROOT/join-same.out" join "2026-05-07-0900-one" "2026-05-07-0900-one"
+  assert_eq "1" "$CAPTURE_CODE" "qn join refuses the same meeting twice"
+  date '+%Y-%m-%d' > "$JOIN_REC/2026-05-07-0930-two/.pruned"
+  join_qn "$TMPROOT/join-pruned.out" join "2026-05-07-0900-one" "2026-05-07-0930-two"
+  assert_eq "1" "$CAPTURE_CODE" "qn join refuses a half whose audio was pruned"
+  rm -f "$JOIN_REC/2026-05-07-0930-two/.pruned"
+  printf '%s\n' "$JOIN_REC/2026-05-07-0930-two" > "$JOIN_REC/.recording"
+  join_qn "$TMPROOT/join-active.out" join "2026-05-07-0900-one" "2026-05-07-0930-two"
+  assert_eq "1" "$CAPTURE_CODE" "qn join refuses the recording in progress"
+  rm -f "$JOIN_REC/.recording"
+  assert_file "$JOIN_REC/2026-05-07-0900-one/them.m4a" "a refused join leaves the halves in place"
+  if ls -d "$JOIN_REC"/.joining-* >/dev/null 2>&1; then
+    fail "a refused join leaves nothing half-built" "a .joining folder is left"
+  else
+    pass "a refused join leaves nothing half-built"
+  fi
+
+  # The halves age like any other recording, so prune reaches them.
+  touch -t 202601010000 "$JOIN_REC/.joined/$FIRST/them.m4a" "$JOIN_REC/.joined/$FIRST/me.m4a"
+  join_qn "$TMPROOT/join-prune.out" prune
+  if [ -e "$JOIN_REC/.joined/$FIRST/them.m4a" ]; then
+    fail "prune deletes old audio from a joined half" "them.m4a is still there"
+  else
+    pass "prune deletes old audio from a joined half"
+  fi
+  assert_file "$JOIN_REC/.joined/$FIRST/$FIRST.md" "prune keeps a joined half's note"
+fi
 
 # --------------------------------------------------------------------------
 section "approving a meeting whose audio was pruned"

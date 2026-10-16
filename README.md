@@ -82,6 +82,16 @@ to your vocabulary, or after you turn on voice grouping. A `qn confirm` needs
 no such thing, because the name is applied when the two tracks are stitched
 back together, which `--notes-only` still does.
 
+A call that dropped and was dialled again records as two meetings. Join them:
+
+```sh
+./qn join 2026-08-20-1535-sync 2026-08-20-1610-zoom-meeting sdk sync
+```
+
+The title is optional. `join` hears the whole call again and writes one set
+of notes, so it takes minutes. The halves move to `.recordings/.joined/`, and
+moving them back undoes the join.
+
 Before a meeting that matters, check the microphone actually carries sound:
 
 ```sh
