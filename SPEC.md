@@ -189,18 +189,26 @@ time.
   silence to its longer track first, so a short or missing track cannot move
   the second half out of step.
 - `attendees.txt` holds everyone from both halves, each once.
-- `consent` is `full` only when both halves are `full`. Otherwise it is
-  `local`. `consent.answered` is written only when both halves have one.
+- `consent` is `full` only when both halves are `full` and `--local` was not
+  given. Otherwise it is `local`. `consent.answered` is written only when both
+  halves have one. `--with` replaces the attendees, as it does for `redo`.
 - The joined meeting is transcribed, grouped and written up again from the
   start, as `qn redo` does. Voice letters belong to one recording, so the
   halves' `confirmed.txt`, `matched.txt` and `skipped.txt` are not carried
   over. The roster names known voices again.
-- The halves and their notes move to `.recordings/.joined/<id>/`. Moving them
-  back, and deleting the joined meeting, undoes the join.
+- The halves and their notes move to `.recordings/.joined/<id>/`. When that
+  folder exists, from an earlier join of the same call, the half gets a
+  `-2` suffix there. Deleting the joined meeting and moving the halves back
+  undoes the join.
+- A join holds `.recordings/.processing` from start to end, the lock a watch
+  write-up holds. It waits while a watch writes up a meeting.
 
-It refuses the recording in progress, a half whose audio was pruned, a half
-with no audio, and the same meeting twice. A refusal changes nothing.
-`--notes-only` is refused, because a join has to hear the audio again.
+It refuses the recording in progress, a half with no note yet (a watch writes
+the note last), a half you refused to record, a half whose audio was pruned,
+a half with no audio, and the same meeting twice. It checks for whisper, the
+speech model and, for a `full` join, Claude before it moves anything. A
+refusal changes nothing. `--notes-only` is refused, because a join has to
+hear the audio again.
 
 ## The roster
 

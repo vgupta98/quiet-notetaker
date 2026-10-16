@@ -803,6 +803,20 @@ else
   assert_eq "10" "$(seconds_of "$JOIN_REC/2026-05-06-0900-held/them.m4a")" \
     "a missing track is padded with silence for its half"
 
+  # A call that dropped twice is joined twice. Its first half is already in
+  # .joined under the same id, and --local holds even two full halves back.
+  make_half "2026-05-06-1000-third" 4 full "Priya"
+  printf 'full\n' > "$JOIN_REC/2026-05-06-0900-held/consent"
+  join_qn "$TMPROOT/join-twice.out" --local join "2026-05-06-0900-held" "2026-05-06-1000-third"
+  assert_eq "0" "$CAPTURE_CODE" "a call that dropped twice can be joined again"
+  assert_file "$JOIN_REC/.joined/2026-05-06-0900-held-2/me.m4a" "the second join keeps the first join's audio apart"
+  assert_contains "$(cat "$JOIN_DIR/2026-05-06-0900-held.md")" "sharing: local" "--local holds a join of full halves"
+  if [ -e "$JOIN_CLAUDE_LOG" ]; then
+    fail "a join under --local never reaches claude" "the stub was called"
+  else
+    pass "a join under --local never reaches claude"
+  fi
+
   # Refusals change nothing.
   make_half "2026-05-07-0900-one" 4 full "Priya"
   make_half "2026-05-07-0930-two" 4 full "Priya"
@@ -816,6 +830,20 @@ else
   join_qn "$TMPROOT/join-active.out" join "2026-05-07-0900-one" "2026-05-07-0930-two"
   assert_eq "1" "$CAPTURE_CODE" "qn join refuses the recording in progress"
   rm -f "$JOIN_REC/.recording"
+  printf 'none\n' > "$JOIN_REC/2026-05-07-0930-two/consent"
+  join_qn "$TMPROOT/join-refused.out" join "2026-05-07-0900-one" "2026-05-07-0930-two"
+  assert_eq "1" "$CAPTURE_CODE" "qn join refuses a half you refused to record"
+  printf 'full\n' > "$JOIN_REC/2026-05-07-0930-two/consent"
+  # A watch writes the note last, so a half with none is still being written up.
+  mv "$JOIN_DIR/2026-05-07-0930-two.md" "$TMPROOT/two.md"
+  join_qn "$TMPROOT/join-unwritten.out" join "2026-05-07-0900-one" "2026-05-07-0930-two"
+  assert_eq "1" "$CAPTURE_CODE" "qn join refuses a half that has no notes yet"
+  mv "$TMPROOT/two.md" "$JOIN_DIR/2026-05-07-0930-two.md"
+  if [ -e "$JOIN_REC/.processing" ]; then
+    fail "a refused join lets go of the write-up lock" ".processing is left"
+  else
+    pass "a refused join lets go of the write-up lock"
+  fi
   assert_file "$JOIN_REC/2026-05-07-0900-one/them.m4a" "a refused join leaves the halves in place"
   if ls -d "$JOIN_REC"/.joining-* >/dev/null 2>&1; then
     fail "a refused join leaves nothing half-built" "a .joining folder is left"
