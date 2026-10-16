@@ -950,6 +950,10 @@ recording_seconds() {
     [ -s "$work/$track.m4a" ] || continue
     length="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$work/$track.m4a")" \
       || return 1
+    # Empty output would read as zero seconds and join the halves out of step.
+    case "$length" in
+      ""|*[!0-9.]*) return 1 ;;
+    esac
     longest="$(printf '%s %s\n' "$longest" "$length" | awk '{ print ($2 > $1) ? $2 : $1 }')"
   done
   printf '%s' "$longest"
@@ -978,11 +982,15 @@ join_track() {
     -c:a aac -b:a 96k "$out/$track.m4a"
 }
 
+# Global, not local: the EXIT trap runs after cmd_join has returned.
+join_staging=""
+
 # A call that dropped and was dialled again is one meeting in two recordings.
 # The joined audio is heard again from the start, because a voice letter
 # belongs to one recording: the same person can be A in one half and B in
 # the other, and only grouping the whole call gives them one letter.
 cmd_join() {
+  local sharing="$4" attendees="$5"
   [ "$NOTES_ONLY" = "no" ] || die "--notes-only cannot join — a join has to hear the audio again"
   local first second
   first="$(resolve_recording "$1")"
@@ -998,54 +1006,84 @@ cmd_join() {
   fi
   local title="${3:-$(title_from_id "$(basename "$first")")}"
 
+  # Rule 19: one write-up at a time. A watch writes up a meeting in the
+  # background after it ends, and joining that meeting under it would move
+  # the folder it is writing to.
+  mkdir -p "$REC_DIR"
+  if ! mkdir "$REC_DIR/.processing" 2>/dev/null; then
+    step "waiting for the meeting being written up — with no watch running, remove $REC_DIR/.processing"
+    until mkdir "$REC_DIR/.processing" 2>/dev/null; do sleep 2; done
+  fi
+  join_staging="$REC_DIR/.joining-$$"
+  trap 'rm -rf "$join_staging"; rmdir "$REC_DIR/.processing" 2>/dev/null || true' EXIT
+  trap 'exit 130' INT TERM
+
   local active="" half id
-  if [ -s "$REC_DIR/.recording" ]; then active="$(cat "$REC_DIR/.recording")"; fi
+  if [ -s "$REC_DIR/.recording" ]; then active="$(basename "$(cat "$REC_DIR/.recording")")"; fi
   for half in "$first" "$second"; do
     id="$(basename "$half")"
     [ -d "$half" ] || die "no recording called '$id' — look in $REC_DIR"
-    [ "$half" != "$active" ] || die "$id is still recording"
+    [ "$id" != "$active" ] || die "$id is still recording"
+    [ "$(read_consent "$half")" != "none" ] || die "$id was refused, so it is not kept"
+    # A watch writes the note last, so a half with no note is still being
+    # written up, or never was.
+    [ -f "$NOTES_DIR/$id.md" ] || die "$id has no notes yet — let it finish, or run: qn redo $id"
     [ ! -f "$half/.pruned" ] || die "the audio for $id was pruned, so there is nothing to join"
     if [ ! -s "$half/them.m4a" ] && [ ! -s "$half/me.m4a" ]; then
       die "$id has no audio to join"
     fi
-    [ ! -e "$JOINED_DIR/$id" ] || die "$JOINED_DIR already holds $id"
   done
+
+  # Rule 1: the joined meeting is no more shareable than its more private
+  # half, or than --local asked for.
+  local consent=local
+  if [ "$sharing" = "full" ] && [ "$(read_consent "$first")" = "full" ] \
+     && [ "$(read_consent "$second")" = "full" ]; then
+    consent=full
+  fi
+
+  # Checked before anything moves. Finding out afterwards strands the call.
+  need whisper-cli "brew install whisper-cpp"
+  [ -f "$MODEL" ] || die "the speech model is missing — run: qn setup"
+  if [ "$consent" = "full" ]; then need claude "install the Claude CLI"; fi
 
   # Built beside the halves and moved into place last, so a failure here
   # changes nothing.
-  local staging="$REC_DIR/.joining-$$" track
-  rm -rf "$staging"
-  mkdir -p "$staging"
+  local track
+  rm -rf "$join_staging"
+  mkdir -p "$join_staging"
   for track in them me; do
-    if ! join_track "$first" "$second" "$track" "$staging"; then
-      rm -rf "$staging"
-      die "ffmpeg could not join the $track tracks — nothing was changed"
-    fi
+    join_track "$first" "$second" "$track" "$join_staging" \
+      || die "could not join the $track tracks — nothing was changed"
   done
 
-  local people
-  people="$(cat "$first/attendees.txt" "$second/attendees.txt" 2>/dev/null | tr ',' '\n' \
-              | sed 's/^ *//; s/ *$//' | awk 'NF && !seen[tolower($0)]++' \
-              | paste -sd ',' - | sed 's/,/, /g' || true)"
-  if [ -n "$people" ]; then printf '%s\n' "$people" > "$staging/attendees.txt"; fi
-
-  # Rule 1: the joined meeting is no more shareable than its more private half.
-  if [ "$(read_consent "$first")" = "full" ] && [ "$(read_consent "$second")" = "full" ]; then
-    printf 'full\n' > "$staging/consent"
-  else
-    printf 'local\n' > "$staging/consent"
+  local people="$attendees"
+  if [ -z "$people" ]; then
+    people="$(cat "$first/attendees.txt" "$second/attendees.txt" 2>/dev/null | tr ',' '\n' \
+                | sed 's/^ *//; s/ *$//' | awk 'NF && !seen[tolower($0)]++' \
+                | paste -sd ',' - | sed 's/,/, /g' || true)"
   fi
+  if [ -n "$people" ]; then printf '%s\n' "$people" > "$join_staging/attendees.txt"; fi
+  printf '%s\n' "$consent" > "$join_staging/consent"
   if [ -e "$first/consent.answered" ] && [ -e "$second/consent.answered" ]; then
-    : > "$staging/consent.answered"
+    : > "$join_staging/consent.answered"
   fi
 
+  # A call that dropped twice is joined twice, and its first half is already
+  # here under the same id.
   mkdir -p "$JOINED_DIR"
-  local note
+  local note kept attempt
   for half in "$first" "$second"; do
     id="$(basename "$half")"
-    mv "$half" "$JOINED_DIR/$id"
+    kept="$JOINED_DIR/$id"
+    attempt=2
+    while [ -e "$kept" ]; do
+      kept="$JOINED_DIR/$id-$attempt"
+      attempt=$((attempt + 1))
+    done
+    mv "$half" "$kept"
     for note in "$NOTES_DIR/$id.md" "$NOTES_DIR/$id.md.bak"; do
-      if [ -e "$note" ]; then mv "$note" "$JOINED_DIR/$id/"; fi
+      if [ -e "$note" ]; then mv "$note" "$kept/"; fi
     done
   done
 
@@ -1054,7 +1092,7 @@ cmd_join() {
   if [ -z "$slug" ]; then slug="meeting"; fi
   id="$(unique_id "$(basename "$first" | cut -d- -f1-4)-$slug")"
   work="$REC_DIR/$id"
-  mv "$staging" "$work"
+  mv "$join_staging" "$work"
   step "joined into $id — the halves are kept in $JOINED_DIR"
   process_recording "$work" "$(title_from_id "$id")" "$people"
 }
@@ -1798,7 +1836,7 @@ case "${1:-}:$#" in
     ;;
   redo:2)           cmd_redo "$2" "$attendees"; exit $? ;;
   join:1|join:2)    die "usage: qn join <id> <id> [title...]" ;;
-  join:*)           cmd_join "$2" "$3" "${*:4}"; exit $? ;;
+  join:*)           cmd_join "$2" "$3" "${*:4}" "$sharing" "$attendees"; exit $? ;;
   approve:2)        cmd_approve "$2"; exit $? ;;
   play:2)           cmd_play "$2" "00:00"; exit $? ;;
   play:3)
