@@ -163,6 +163,7 @@ class HandshakeTests(ServerTestCase):
         self.assertEqual(result["capabilities"], {"tools": {}})
         self.assertIn("name", result["serverInfo"])
         self.assertIn("version", result["serverInfo"])
+        self.assertIn("never you", result["instructions"])
 
     def test_an_older_supported_version_is_echoed_back(self) -> None:
         request = json.loads(json.dumps(HANDSHAKE[0]))

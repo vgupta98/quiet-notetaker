@@ -629,6 +629,10 @@ it had ended, and captured nothing.
 
 Read-only. Four tools. All return JSON.
 
+The notes are in the first person, so `initialize` returns `instructions` and
+the `meetings_get` description repeats them: "I" and "my" mean the user, never
+the reading assistant.
+
 ### `meetings_search`
 `{query: string, from?: "YYYY-MM-DD", to?: "YYYY-MM-DD", with?: string, limit?: int=10}`
 → `{total: int, shown: int, results: [{id, title, date, attendees, matched_in, snippet}]}`

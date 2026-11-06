@@ -35,6 +35,12 @@ PARSE_ERROR = -32700
 
 _DATE = {"type": "string", "description": "Date as YYYY-MM-DD.", "pattern": r"^\d{4}-\d{2}-\d{2}$"}
 
+VOICE = (
+    "The user wrote these notes in the first person. In notes, snippets and action items, "
+    "\"I\", \"me\", \"my\" and \"My action items\" mean the user, never you. In a transcript, "
+    "\"Me\" is the user. When you repeat a line to the user, write \"you\" and \"your\"."
+)
+
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "meetings_search",
@@ -81,7 +87,8 @@ TOOLS: list[dict[str, Any]] = [
             "open questions. Returns {id, title, date, attendees, sharing, sections}, where "
             "sections maps each heading to its text.\n"
             "This is the cheap way to read a meeting, and it answers most questions on its "
-            "own. It never returns the transcript. Get the id from meetings_search."
+            "own. It never returns the transcript. Get the id from meetings_search.\n"
+            + VOICE
         ),
         "inputSchema": {
             "type": "object",
@@ -249,6 +256,7 @@ def handle_initialize(params: dict[str, Any]) -> dict[str, Any]:
         "protocolVersion": version,
         "capabilities": {"tools": {}},
         "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+        "instructions": VOICE,
     }
 
 
